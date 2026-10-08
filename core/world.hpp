@@ -4,6 +4,8 @@
 // dlopen'd copy of it (one per thread: each copy has its own code and GOT, so threads never
 // share one). A World is a private copy of that library's state region. use() points the GOT's
 // state slots at a world, so the unmodified gameplay code then reads and writes that world.
+// Every Lib loads the same file, so a world from one Lib runs in any other: use() adopts it,
+// rebasing the pointers the state holds into the library image (vtables, quest builders, strings).
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -29,9 +31,9 @@ class Lib {
   void destroy(World *w);
   // Copies all of src's state into dst (both from this Lib). A save/restore for search.
   void copy(World *dst, const World *src);
-  // Makes w the world the gameplay code sees. Cheap when it already is.
+  // Makes w the world the gameplay code sees. Cheap when it already is current; adopting a
+  // world another Lib last ran scans it once.
   void use(World *w);
-  World *current() const { return current_; }
 
   // A state symbol's address in world w (or nullptr if it isn't state).
   void *addr(const World *w, const char *symbol) const;
@@ -60,15 +62,17 @@ class Lib {
   char *skip_lo_ = nullptr, *skip_hi_ = nullptr;  // `output`: per-library scratch, not state
   std::vector<uintptr_t *> slots_;  // GOT slots that point into the region
   std::vector<uintptr_t> slot_off_;
+  size_t image_size_ = 0;  // the loaded image spans [base_, base_ + image_size_)
   std::vector<char> pristine_;
-  World *current_ = nullptr;
+  uint64_t current_ = 0;  // id of the world the GOT points at (ids are never reused, unlike addresses)
   void *sym(const char *name) const;
   void restore_own();
 };
 
 struct World {
-  char *block;  // region_size() bytes, mmap'd so untouched pages cost nothing
-  Lib *lib;
+  char *block;      // region_size() bytes, mmap'd so untouched pages cost nothing
+  uintptr_t image;  // base of the library image its pointers point into
+  uint64_t id;
 };
 
 }  // namespace crimson

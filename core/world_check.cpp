@@ -3,7 +3,8 @@
 //     native `core` binary misreads a misaligned global with movaps under clang 22, so it isn't the reference);
 //  2. worlds stepped interleaved in one Lib match the same runs stepped alone;
 //  3. Libs on separate threads don't disturb each other;
-//  4. copy() restores a world exactly (search save/restore).
+//  4. copy() restores a world exactly (search save/restore);
+//  5. a world handed between Libs (threads) matches the run that stayed in one.
 // Usage: world_check <libcrimson_core.so> <reference command: reads a transport on stdin, writes snapshots>
 #include <cmath>
 #include <cstdio>
@@ -184,6 +185,27 @@ int main(int argc, char **argv) {
     expect(snap(lib, a) == first && first != other, "copy() restores a world exactly");
     lib.destroy(a);
     lib.destroy(save);
+  }
+  // 5. Hand one world back and forth between two Libs every 97 ticks. Between turns the idle Lib
+  // points at a decoy, so code reached through a stale image pointer would run the wrong world.
+  {
+    std::vector<uint64_t> ref = solo(lib, runs[1], nullptr);
+    Lib other(so);
+    Lib *libs[2] = {&lib, &other};
+    World *decoys[2] = {lib.create(), other.create()};
+    World *w = other.create();
+    begin(lib, w, runs[1]);
+    std::vector<uint64_t> got{snap(lib, w)};
+    for (long t = 0; t < runs[1].ticks; ++t) {
+      int k = t / 97 % 2;
+      libs[1 - k]->use(decoys[1 - k]);
+      if (!tick(*libs[k], w, t, runs[1].seed, nullptr)) break;
+      got.push_back(snap(*libs[k], w));
+    }
+    expect(got == ref, "a world handed between Libs matches the run that stayed in one");
+    other.destroy(w);
+    lib.destroy(decoys[0]);
+    other.destroy(decoys[1]);
   }
   printf("region %zu bytes\n", lib.region_size());
   return fails ? 1 : 0;

@@ -42,6 +42,7 @@ std::string private_copy(const std::string &path) {
 }
 
 const size_t PAGE = 4096;
+std::atomic<uint64_t> next_world_id{1};
 
 }  // namespace
 
@@ -108,6 +109,9 @@ Lib::Lib(const std::string &so_path) : path_(so_path) {
     slot_off_.push_back(target - (uintptr_t)lo_);
   }
   if (slots_.size() < 1000) die("too few state GOT slots; is this the -fPIC world build?");
+  auto *ph = reinterpret_cast<const Elf64_Phdr *>(file.data() + eh->e_phoff);
+  for (int i = 0; i < eh->e_phnum; ++i)
+    if (ph[i].p_type == PT_LOAD) image_size_ = std::max<size_t>(image_size_, ph[i].p_vaddr + ph[i].p_memsz);
   pristine_.assign(lo_, hi_);
 
   auto fn = [&](const char *name) {
@@ -136,7 +140,7 @@ Lib::~Lib() {
 
 void Lib::restore_own() {
   for (size_t i = 0; i < slots_.size(); ++i) *slots_[i] = reinterpret_cast<uintptr_t>(lo_) + slot_off_[i];
-  current_ = nullptr;
+  current_ = 0;
 }
 
 void *Lib::sym(const char *name) const { return dlsym(handle_, name); }
@@ -160,11 +164,11 @@ World *Lib::create() {
     }
     p = end;
   }
-  return new World{b, this};
+  return new World{b, base_, next_world_id++};
 }
 
 void Lib::destroy(World *w) {
-  if (current_ == w) restore_own();
+  if (current_ == w->id) restore_own();
   size_t lead = reinterpret_cast<uintptr_t>(lo_) & (PAGE - 1);
   munmap(w->block - lead, lead + (hi_ - lo_));
   delete w;
@@ -174,18 +178,34 @@ void Lib::copy(World *dst, const World *src) {
   size_t size = hi_ - lo_;
   if (!skip_lo_) {
     memcpy(dst->block, src->block, size);
+    dst->image = src->image;
     return;
   }
   size_t a = skip_lo_ - lo_, b = skip_hi_ - lo_;
   memcpy(dst->block, src->block, a);
   memcpy(dst->block + b, src->block + b, size - b);
+  dst->image = src->image;
 }
 
 void Lib::use(World *w) {
-  if (current_ == w) return;
+  if (w->image != base_) {
+    // Another Lib ran it: move every pointer into that Lib's image to the same place in ours.
+    uintptr_t from = w->image;
+    size_t size = hi_ - lo_;
+    for (size_t off = (8 - (reinterpret_cast<uintptr_t>(lo_) & 7)) & 7; off + 8 <= size; off += 8) {
+      uintptr_t v;
+      memcpy(&v, w->block + off, 8);
+      if (v - from < image_size_) {
+        v = v - from + base_;
+        memcpy(w->block + off, &v, 8);
+      }
+    }
+    w->image = base_;
+  }
+  if (current_ == w->id) return;
   uintptr_t base = reinterpret_cast<uintptr_t>(w->block);
   for (size_t i = 0; i < slots_.size(); ++i) *slots_[i] = base + slot_off_[i];
-  current_ = w;
+  current_ = w->id;
 }
 
 ptrdiff_t Lib::offset(const char *symbol) const {
