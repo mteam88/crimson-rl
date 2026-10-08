@@ -10,6 +10,7 @@ Usage: .venv/bin/python puffer/bc.py <out.pt> <run.actions>... [--steps N] [--la
 """
 import argparse
 import ctypes
+import os
 import random
 import struct
 import sys
@@ -40,6 +41,7 @@ class EnvConfig(ctypes.Structure):
 
 
 def load_env_lib(ini):
+    os.environ.setdefault("CRIMSON_CORE_SO", str(ROOT / "build/core/libcrimson_core.so"))
     lib = ctypes.CDLL(str(ROOT / "build/libcrimson_env.so"))
     lib.crimson_env_new.restype = ctypes.c_void_p
     lib.crimson_env_new.argtypes = [ctypes.POINTER(EnvConfig), ctypes.c_uint64, ctypes.c_char_p]
@@ -54,10 +56,18 @@ def load_env_lib(ini):
 
 
 class Run:
-    def __init__(self, path):
-        self.seed = struct.unpack_from("<I", Path(path).read_bytes())[0]
-        self.actions = np.fromfile(path, dtype=np.int32, offset=4).reshape(-1, len(HEADS))
+    """A run to learn from: replaying `actions` from `seed` gives the observations, `targets` the decisions to learn
+    (the actions themselves for a TAS run; the expert's labels for a DAgger rollout)."""
+
+    def __init__(self, seed, actions, targets=None):
+        self.seed, self.actions = seed, actions
+        self.targets = actions if targets is None else targets
         self.returns = None
+
+    @classmethod
+    def load(cls, path):
+        seed = struct.unpack_from("<I", Path(path).read_bytes())[0]
+        return cls(seed, np.fromfile(path, dtype=np.int32, offset=4).reshape(-1, len(HEADS)))
 
 
 class Lane:
@@ -67,11 +77,18 @@ class Lane:
         self.lib, self.runs = lib, runs
         self.env = lib.crimson_env_new(ctypes.byref(config), 1000 + index, core)
         self.obs = np.zeros(OBS, dtype=np.float32)
-        self.start(random.choice(runs))
+        # Lanes start at random points of their first run, so a batch mixes stages of the game.
+        run = random.choice(runs)
+        self.start(run, random.randrange(len(run.actions)))
 
-    def start(self, run):
+    def start(self, run, skip=0):
         self.run, self.t = run, 0
         self.lib.crimson_env_reset_seed(self.env, run.seed, self.obs.ctypes.data)
+        done = ctypes.c_int(0)
+        for self.t in range(skip):
+            self.lib.crimson_env_step(self.env, run.actions[self.t].ctypes.data, self.obs.ctypes.data,
+                                      ctypes.byref(done))
+        self.t = skip
 
     def play(self, obs_out, act_out, ret_out):
         """Fills one chunk: the observation each decision was made on, the decision, its return."""
@@ -81,7 +98,7 @@ class Lane:
                 self.start(random.choice(self.runs))
             obs_out[k] = self.obs
             a = self.run.actions[self.t]
-            act_out[k] = a
+            act_out[k] = self.run.targets[self.t]
             ret_out[k] = self.run.returns[self.t]
             self.lib.crimson_env_step(self.env, a.ctypes.data, self.obs.ctypes.data, ctypes.byref(done))
             self.t += 1
@@ -100,7 +117,7 @@ def discounted_returns(lib, config, core, run, gamma):
         if done.value:
             break
     lib.crimson_env_free(ctypes.c_void_p(env))
-    run.actions = run.actions[:len(rewards)]
+    run.actions, run.targets = run.actions[:len(rewards)], run.targets[:len(rewards)]
     g, out = 0.0, np.zeros(len(rewards), dtype=np.float32)
     for t in range(len(rewards) - 1, -1, -1):
         g = rewards[t] + gamma * g
@@ -114,6 +131,62 @@ def make_policy(ini, device):
     policy = pufferlib.models.Policy(CrimsonEncoder(OBS, hidden), pufferlib.models.DefaultDecoder(HEADS, hidden),
                                      network)
     return policy.to(device)
+
+
+class Trainer:
+    """The policy, its optimizer, and lanes replaying `runs` (a list the caller may extend while training)."""
+
+    def __init__(self, ini, runs, lanes=64, chunk=64, lr=3e-4, threads=6, value_coef=0.25, init=None, device="cuda"):
+        self.lib, self.config = load_env_lib(ini)
+        self.core = str(ROOT / "build/core/libcrimson_core.so").encode()
+        self.gamma = float(ini["train"]["gamma"])
+        self.runs, self.value_coef, self.device = runs, value_coef, device
+        self.pool = ThreadPoolExecutor(threads)
+        self.add(runs)
+        self.lanes = None  # made on the first train(), once there are runs
+        self.policy = make_policy(ini, device)
+        if init:
+            state_dict = torch.load(init, map_location=device)
+            self.policy.load_state_dict({k.replace("module.", ""): v for k, v in state_dict.items()})
+        self.opt = torch.optim.AdamW(self.policy.parameters(), lr=lr, weight_decay=1e-4)
+        B, T = lanes, chunk
+        self.obs = np.zeros((B, T, OBS), dtype=np.float32)
+        self.act = np.zeros((B, T, len(HEADS)), dtype=np.int64)
+        self.ret = np.zeros((B, T), dtype=np.float32)
+        self.steps = 0
+
+    def add(self, runs):
+        """Computes the returns of new runs; then they may join self.runs."""
+        list(self.pool.map(lambda run: discounted_returns(self.lib, self.config, self.core, run, self.gamma), runs))
+
+    def train(self, steps, log_every=50):
+        B, T = self.act.shape[:2]
+        if self.lanes is None:
+            self.lanes = list(self.pool.map(lambda i: Lane(self.lib, self.config, self.core, self.runs, i), range(B)))
+        policy, t0 = self.policy, time.time()
+        policy.train()
+        for step in range(1, steps + 1):
+            list(self.pool.map(lambda i: self.lanes[i].play(self.obs[i], self.act[i], self.ret[i]), range(B)))
+            o = torch.from_numpy(self.obs).to(self.device)
+            a = torch.from_numpy(self.act).to(self.device).view(B * T, -1)
+            r = torch.from_numpy(self.ret).to(self.device)
+
+            # Like PPO's update (MinGRU.forward_train), each chunk starts from a zero recurrent state.
+            logits, values = policy(o)
+            losses = [F.cross_entropy(lg, a[:, i]) for i, lg in enumerate(logits)]
+            value_loss = F.smooth_l1_loss(values.reshape(-1), r.view(-1))
+            loss = sum(losses) + self.value_coef * value_loss
+            self.opt.zero_grad()
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
+            self.opt.step()
+            self.steps += 1
+            if step % log_every == 0:
+                with torch.no_grad():
+                    acc = [(lg.argmax(-1) == a[:, i]).float().mean().item() for i, lg in enumerate(logits)]
+                print(f"step {self.steps}  loss {loss.item():.3f}  heads " + " ".join(f"{x.item():.3f}" for x in losses)
+                      + "  acc " + " ".join(f"{x:.2f}" for x in acc) + f"  value {value_loss.item():.2f}"
+                      + f"  {step * B * T / (time.time() - t0):.0f} samples/s", flush=True)
 
 
 def main():
@@ -131,49 +204,13 @@ def main():
 
     ini = ConfigParser()
     ini.read(ROOT / "puffer/crimson.ini")
-    lib, config = load_env_lib(ini)
-    core = str(ROOT / "build/core/libcrimson_core.so").encode()
-    gamma = float(ini["train"]["gamma"])
-    runs = [Run(path) for path in args.runs]
+    runs = [Run.load(path) for path in args.runs]
+    trainer = Trainer(ini, runs, args.lanes, args.chunk, args.lr, args.threads, args.value_coef, args.init)
     for run in runs:
-        discounted_returns(lib, config, core, run, gamma)
         print(f"seed {run.seed}: {len(run.actions)} decisions, return {run.returns[0]:.0f}")
-    lanes = [Lane(lib, config, core, runs, i) for i in range(args.lanes)]
-
-    device = "cuda"
-    policy = make_policy(ini, device)
-    if args.init:
-        policy.load_state_dict(torch.load(args.init, map_location=device))
-    opt = torch.optim.AdamW(policy.parameters(), lr=args.lr, weight_decay=1e-4)
-    B, T = args.lanes, args.chunk
-    obs = np.zeros((B, T, OBS), dtype=np.float32)
-    act = np.zeros((B, T, len(HEADS)), dtype=np.int64)
-    ret = np.zeros((B, T), dtype=np.float32)
-    pool = ThreadPoolExecutor(args.threads)
-    t0 = time.time()
-    for step in range(1, args.steps + 1):
-        list(pool.map(lambda i: lanes[i].play(obs[i], act[i], ret[i]), range(B)))
-        o = torch.from_numpy(obs).to(device)
-        a = torch.from_numpy(act).to(device)
-        r = torch.from_numpy(ret).to(device)
-
-        # Like PPO's update (MinGRU.forward_train), each chunk starts from a zero recurrent state.
-        logits, values = policy(o)
-        losses = [F.cross_entropy(lg, a.view(B * T, -1)[:, i]) for i, lg in enumerate(logits)]
-        value_loss = F.smooth_l1_loss(values.reshape(-1), r.view(-1))
-        loss = sum(losses) + args.value_coef * value_loss
-        opt.zero_grad()
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.0)
-        opt.step()
-        if step % 50 == 0:
-            with torch.no_grad():
-                acc = [(lg.argmax(-1) == a.view(B * T, -1)[:, i]).float().mean().item() for i, lg in enumerate(logits)]
-            print(f"step {step}  loss {loss.item():.3f}  heads " + " ".join(f"{x.item():.3f}" for x in losses)
-                  + "  acc " + " ".join(f"{x:.2f}" for x in acc) + f"  value {value_loss.item():.2f}"
-                  + f"  {step * B * T / (time.time() - t0):.0f} samples/s", flush=True)
-        if step % 500 == 0 or step == args.steps:
-            torch.save(policy.state_dict(), args.out)
+    for _ in range(0, args.steps, 500):
+        trainer.train(min(500, args.steps - trainer.steps))
+        torch.save(trainer.policy.state_dict(), args.out)
 
 
 if __name__ == "__main__":

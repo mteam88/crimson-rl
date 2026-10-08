@@ -32,8 +32,9 @@ if "if (pufferl.train_cudagraph)" not in (overlay / "pufferlib.cu").read_text():
     run("patch", "-p1", "-i", HERE / "pufferlib-close.patch", cwd=overlay)
 
 core_so = ROOT / "build/core/libcrimson_core.so"
-cxx = ["clang++", "-O2", "-g", "-std=c++17", "-fPIC", "-fms-extensions", "-I", ROOT / "core", "-I", ROOT / "env",
-       "-I", CORE / "host", "-I", ROOT / "upstream/crimson/third_party/headers", "-I", CORE / "build/native/include"]
+cxx = ["clang++", "-O2", "-g", "-std=c++17", "-fPIC", "-fms-extensions", "-fopenmp", "-I", ROOT / "core",
+       "-I", ROOT / "env", "-I", ROOT / "tas", "-I", CORE / "host", "-I", ROOT / "upstream/crimson/third_party/headers",
+       "-I", CORE / "build/native/include"]
 objects = []
 for src in [ROOT / "core/world.cpp", ROOT / "env/env.cpp", ROOT / "env/capi.cpp"]:
     obj = OUT / (src.stem + ".o")

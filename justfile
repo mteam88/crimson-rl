@@ -55,9 +55,9 @@ train *args: puffer
 render replay out *args:
     upstream/crimson/.venv/bin/crimson replay render {{replay}} --out {{out}} --ffmpeg-bin tools/ffmpeg-nvenc --overwrite {{args}}
 
-# The env as a shared library (env/capi.h), for Python tools: puffer/bc.py.
+# The env and the DAgger expert as a shared library (env/capi.h), for Python tools: puffer/bc.py, dagger.py.
 env-lib: core
-    {{cxx}} -fms-extensions -fPIC -shared -I env core/world.cpp env/env.cpp env/capi.cpp -ldl -pthread -o build/libcrimson_env.so
+    {{cxx}} -fms-extensions -fopenmp -fPIC -shared -I env -I tas core/world.cpp env/env.cpp env/capi.cpp -ldl -pthread -o build/libcrimson_env.so
 
 # Behavior cloning from TAS runs (transports with their .actions): a PPO starting point.
 bc out *args: env-lib

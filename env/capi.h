@@ -29,6 +29,16 @@ float crimson_env_step(CrimsonEnv *env, const int *actions, float *obs, int *don
 /* Stats of runs finished since the last call. */
 void crimson_env_take_stats(CrimsonEnv *env, CrimsonEnvStats *out);
 
+/* The TAS search (tas/search.hpp) as an expert for DAgger: labels a state with the decision the search would make
+ * there. */
+typedef struct CrimsonExpert CrimsonExpert;
+CrimsonExpert *crimson_expert_new(const CrimsonEnvConfig *config, int candidates);
+void crimson_expert_free(CrimsonExpert *expert);
+/* Writes the best candidate's first decision (CR_NUM_ATNS ints) for env's state, searching `segment` decisions
+ * then `lookahead` more; `salt` varies the candidates. Returns the decision that candidate died at, or -1. */
+int crimson_expert_label(CrimsonExpert *expert, CrimsonEnv *env, int segment, int lookahead, long salt,
+                         int *action);
+
 #ifdef __cplusplus
 }
 #endif
