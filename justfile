@@ -54,3 +54,16 @@ train *args: puffer
 # ffmpeg without libx264.
 render replay out *args:
     upstream/crimson/.venv/bin/crimson replay render {{replay}} --out {{out}} --ffmpeg-bin tools/ffmpeg-nvenc --overwrite {{args}}
+
+# The env as a shared library (env/capi.h), for Python tools: puffer/bc.py.
+env-lib: core
+    {{cxx}} -fms-extensions -fPIC -shared -I env core/world.cpp env/env.cpp env/capi.cpp -ldl -pthread -o build/libcrimson_env.so
+
+# Behavior cloning from TAS runs (transports with their .actions): a PPO starting point.
+bc out *args: env-lib
+    systemd-run --user --scope --unit=crimson-bc-$(date +%s) -p MemoryHigh=12G .venv/bin/python puffer/bc.py {{out}} {{args}}
+
+# The scripted controller playing live from `runs` seeds (no search): a baseline.
+bot first runs="32" *args: core
+    {{cxx}} -fms-extensions -fopenmp -I env core/world.cpp env/env.cpp tas/bot.cpp -ldl -pthread -o build/bot
+    systemd-run --user --scope --unit=crimson-bot-$(date +%s) -p MemoryHigh=8G ./build/bot build/core/libcrimson_core.so {{first}} {{runs}} {{args}}

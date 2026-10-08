@@ -25,6 +25,8 @@ extern "C" void crimson_env_free(CrimsonEnv *env) { delete env; }
 
 extern "C" void crimson_env_reset(CrimsonEnv *env, float *obs) { env->env.reset(obs); }
 
+extern "C" void crimson_env_reset_seed(CrimsonEnv *env, uint32_t seed, float *obs) { env->env.reset(seed, obs); }
+
 extern "C" float crimson_env_step(CrimsonEnv *env, const int *actions, float *obs, int *done) {
   bool d;
   float r = env->env.step(actions, obs, &d);
