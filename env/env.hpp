@@ -52,6 +52,8 @@ class Env {
 
   uint32_t seed() const { return seed_; }
   float health() const;
+  // A hash of the world's state, for checking that two runs agree.
+  uint64_t state_hash() const;
   long ticks() const { return ticks_; }
   int experience() const;
   bool alive() const;
@@ -71,6 +73,7 @@ class Env {
   uint32_t seed_ = 0;
   long ticks_ = 0;
   int last_xp_ = 0;
+  int last_action_[CR_NUM_ATNS] = {};
   double return_ = 0;
   std::vector<uint8_t> transport_, last_transport_;
   int last_score_ = 0;

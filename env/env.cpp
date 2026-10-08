@@ -27,7 +27,7 @@ std::mutex core_path_lock;
 // Where the game's state lives in a world. The same in every Lib: they all load one file.
 struct Layout {
   ptrdiff_t player, creatures, shots, rockets, bonuses, pending, dirty, choices, elapsed, stage, active,
-      shock_links, timers[5], shake;
+      shock_links, timers[5], shake, weapons;
 };
 Layout layout;
 std::once_flag layout_once;
@@ -59,6 +59,7 @@ void resolve(const Lib &lib) {
   const char *timers[5] = {"bonus_weapon_power_up_timer", "bonus_reflex_boost_timer", "bonus_freeze_timer",
                            "bonus_energizer_timer", "bonus_double_xp_timer"};
   for (int i = 0; i < 5; ++i) layout.timers[i] = off(timers[i], 0);  // aliases into a larger blob: no size of their own
+  layout.weapons = off("weapon_table", 0);  // 64 rows and the next row's 4-byte ammo class
   layout.shake = off("ui_mouse_blocked", 0) + offsetof(ui_runtime_state_original_t, camera_shake_offset_value);
 }
 
@@ -75,6 +76,16 @@ constexpr float PI = 3.14159265358979f;
 constexpr float TERRAIN_SIZE = 1024;  // the arena
 
 float lg(float x) { return logf(1.0f + std::max(x, 0.0f)); }
+
+// Where a body moving in a straight line from (dx, dy) relative to the player passes closest to it: the distance
+// then, and how far the body travels until then. Neither depends on the units its velocity is in. A body moving
+// away is closest now.
+void closest_approach(float dx, float dy, float vx, float vy, float *dist, float *path) {
+  float v2 = vx * vx + vy * vy, t = v2 > 0 ? std::max(0.0f, -(dx * vx + dy * vy) / v2) : 0;
+  float cx = dx + vx * t, cy = dy + vy * t;
+  *dist = sqrtf(cx * cx + cy * cy);
+  *path = t * sqrtf(v2);
+}
 
 }  // namespace
 
@@ -132,6 +143,19 @@ float Env::health() const {
   return reinterpret_cast<const player_state_t *>(world_->block + layout.player)->health;
 }
 
+uint64_t Env::state_hash() const {
+  // Pointers into the library's image differ between Libs: hash the game's tables, which hold none.
+  uint64_t h = 1469598103934665603ull;
+  auto add = [&](ptrdiff_t off, size_t n) {
+    for (size_t i = 0; i < n; ++i) h = (h ^ (uint8_t)world_->block[off + i]) * 1099511628211ull;
+  };
+  add(layout.player, sizeof(player_state_t));
+  add(layout.creatures, 385 * sizeof(creature_t));
+  add(layout.shots, sizeof(projectile_pool_t));
+  add(layout.bonuses, sizeof(bonus_pool_t));
+  return h;
+}
+
 void Env::copy_from(const Env &src) {
   thread_lib().copy(world_, src.world_);
   rng_ = src.rng_;
@@ -139,6 +163,7 @@ void Env::copy_from(const Env &src) {
   ticks_ = src.ticks_;
   last_xp_ = src.last_xp_;
   return_ = src.return_;
+  memcpy(last_action_, src.last_action_, sizeof last_action_);
 }
 
 bool Env::alive() const {
@@ -158,6 +183,7 @@ void Env::begin(uint32_t seed) {
   if (!l.init(seed, config_.mode, 1, 1)) die("portable_init failed");
   seed_ = seed;
   ticks_ = 0;
+  memset(last_action_, 0, sizeof last_action_);
   last_xp_ = experience();
   return_ = 0;
   if (config_.record) {
@@ -244,6 +270,7 @@ float Env::step(const int *a, float *obs, bool *done) {
     if (i < n && (dirty || choices[i] > 0)) cmd = {1, i};
   }
 
+  memcpy(last_action_, a, sizeof last_action_);
   bool ended = false;
   for (int r = 0; r < config_.repeat && !ended; ++r) {
     aim_at(aim, &in.aim_x, &in.aim_y);
@@ -328,6 +355,8 @@ void Env::observe(float *obs) {
     const creature_t &c = creatures[near[k].i];
     float dx = c.pos_x - px, dy = c.pos_y - py, d = sqrtf(near[k].d2);
     int shot = c.flags & 0x100 ? (int)c.orbit_radius.raw_u32 : c.flags & 0x10 ? PROJECTILE_TYPE_PLASMA_RIFLE : 0;
+    float cpa, path;
+    closest_approach(dx, dy, c.vel_x, c.vel_y, &cpa, &path);
     float f[CR_CREATURE_F] = {
         1,
         dx / CR_SCALE,
@@ -354,6 +383,9 @@ void Env::observe(float *obs) {
         (c.flags & 0x110) ? 1.0f : 0.0f,
         (c.flags & 0x80) ? 1.0f : 0.0f,
         (c.flags & 0x400) ? 1.0f : 0.0f,
+        d > 0 ? -(dx * c.vel_x + dy * c.vel_y) / d / 2 : 0,  // closing speed, units a tick
+        cpa / CR_SCALE,
+        path / CR_SCALE,
         (float)std::clamp(c.type_id + 1, 0, CR_CREATURE_TYPE_VOCAB - 1),
         (float)std::clamp(c.ai_mode + 1, 0, CR_AI_VOCAB - 1),
         (float)std::clamp(shot, 0, CR_SHOT_TYPE_VOCAB - 1),
@@ -403,6 +435,8 @@ void Env::observe(float *obs) {
       type = 48 + s.fields.type_id;
     }
     float dx = x - px, dy = y - py, d = sqrtf(dx * dx + dy * dy), v = sqrtf(vx * vx + vy * vy);
+    float cpa, path;
+    closest_approach(dx, dy, vx, vy, &cpa, &path);
     float f[CR_SHOT_F] = {
         1,
         dx / CR_SCALE,
@@ -416,7 +450,8 @@ void Env::observe(float *obs) {
         life,
         radius / 4,
         lg(damage) / 5,
-        0,
+        cpa / CR_SCALE,
+        path / CR_SCALE,
         (float)std::clamp(type, 0, CR_SHOT_TYPE_VOCAB - 1),
     };
     memcpy(row, f, sizeof f);
@@ -543,7 +578,31 @@ void Env::observe(float *obs) {
   s[n++] = nc / 384.0f;
   s[n++] = *reinterpret_cast<const int *>(b + layout.shock_links) / 10.0f;
   s[n++] = (float)(ticks_ % 60) / 60;
-  static_assert(CR_SCALARS >= 47, "scalars above outgrew CR_SCALARS");
+  // The weapon in hand and the alternate one: the table's stats, as this run has them.
+  for (int id : {p->weapon_id, p->alt_weapon_id}) {
+    if (id < 0 || id >= 64) {
+      n += 7;
+      continue;
+    }
+    const weapon_stats_t &w = reinterpret_cast<const weapon_stats_t *>(b + layout.weapons)[id];
+    s[n++] = w.clip_size / 30.0f;
+    s[n++] = w.shot_cooldown;
+    s[n++] = w.reload_time / 2;
+    s[n++] = w.spread_heat * 4;
+    s[n++] = w.projectile_speed / 50;
+    s[n++] = lg(w.damage_scale);
+    s[n++] = w.pellet_count / 8.0f;
+  }
+  // The previous decision.
+  const int *a = last_action_;
+  s[n++] = a[0] == 0;
+  s[n++] = a[0] > 0 ? cosf((a[0] - 1) * 2 * PI / (CR_MOVE - 1)) : 0;
+  s[n++] = a[0] > 0 ? sinf((a[0] - 1) * 2 * PI / (CR_MOVE - 1)) : 0;
+  s[n++] = cosf(a[1] * 2 * PI / CR_AIM);
+  s[n++] = sinf(a[1] * 2 * PI / CR_AIM);
+  s[n++] = a[2];
+  s[n++] = a[3];
+  static_assert(CR_SCALARS >= 70, "scalars above outgrew CR_SCALARS");
   memcpy(obs + CR_OFF_SCALARS, s, sizeof s);
 
   float *ids = obs + CR_OFF_IDS;

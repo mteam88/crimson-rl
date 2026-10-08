@@ -2,7 +2,8 @@
  * include it; train/layout.py parses the #defines, so this file is the one source of truth.
  *
  * One observation is CR_OBS_SIZE floats, sections in this order:
- *   scalars    CR_SCALARS          the player, timers, run progress (env.cpp write_scalars lists them)
+ *   scalars    CR_SCALARS          the player, both weapons' stats, timers, run progress, the previous decision
+ *                                  (Env::observe lists them)
  *   ids        CR_IDS              categorical, as floats: weapon, alt weapon, the 7 perk choices (0 = none)
  *   perks      CR_PERKS            count of each perk id taken
  *   creatures  CR_CREATURES rows   nearest live creatures first, CR_CREATURE_F each
@@ -12,27 +13,28 @@
  *   global     CR_GLOBAL_C x CR_GLOBAL x CR_GLOBAL  grid over the arena and its spawn margin
  * In every row, field 0 is 1 for a present entity and the last *_IDS fields are categorical ids
  * (0 = none) for the encoder to embed; vocabulary sizes are the *_VOCAB defines.
- * Positions are relative to the player in world units / CR_SCALE, axes as the world's (x right, y down). */
+ * Positions are relative to the player in world units / CR_SCALE, axes as the world's (x right, y down).
+ * Creature and shot rows include where the body, moving straight on, passes closest to the player. */
 #ifndef CRIMSON_ENV_LAYOUT_H
 #define CRIMSON_ENV_LAYOUT_H
 
 #define CR_SCALE 512.0f
 
-#define CR_SCALARS 64
+#define CR_SCALARS 80
 #define CR_IDS 9
 #define CR_WEAPON_VOCAB 64
 #define CR_PERK_VOCAB 64
 #define CR_PERKS 64
 
 #define CR_CREATURES 96
-#define CR_CREATURE_F 28
+#define CR_CREATURE_F 31
 #define CR_CREATURE_IDS 3 /* type, ai mode, ranged projectile type */
 #define CR_CREATURE_TYPE_VOCAB 8
 #define CR_AI_VOCAB 16
 #define CR_SHOT_TYPE_VOCAB 64 /* projectile types 1..0x2D, secondary (rocket) types at 48 + type */
 
 #define CR_SHOTS 64
-#define CR_SHOT_F 14
+#define CR_SHOT_F 15
 #define CR_SHOT_IDS 1
 
 #define CR_BONUSES 16

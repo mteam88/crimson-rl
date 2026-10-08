@@ -1,6 +1,7 @@
 // A tool-assisted Survival run on a chosen seed: a search over the inputs with save/restore. From the committed
 // state it plays candidate plans in parallel, each for one segment and then a lookahead under a default plan, and
-// commits the segment of the best (survival first, then experience and health). When every candidate dies inside
+// commits the segment of the best (survival first, then experience and health).
+// When every candidate dies inside
 // its segment, it backs up some segments (further on each failure) and tries new candidates there.
 // The committed actions then replay in a fresh recording env, which writes the run as a transport (check it with
 // core/ranked_check.mjs).
@@ -101,10 +102,22 @@ Action act(const Plan &plan, const float *obs, Rng &rng) {
 }
 
 struct Outcome {
-  double value;
   int died_at;  // decision the run ended in, or -1
+  int xp;       // experience gained
+  float health;
+  float crowd;  // creatures within 256 units at the end
   std::vector<Action> segment;
+  uint64_t at_k = 0;  // the world's hash after the segment, to check the commit reproduces it
 };
+
+// Survival first (later death is better); then experience and health, less crowding. A full bar is worth 2000
+// experience, plus a quarter of the best candidate's gain so it still counts late, when experience comes in floods;
+// each creature left within 256 units costs 2% of a bar.
+double value(const Outcome &o, int best_xp) {
+  if (o.died_at >= 0) return -1e9 + o.died_at;
+  double bar = 2000 + 0.25 * best_xp;
+  return o.xp + (o.health / 100 - 0.02 * o.crowd) * bar;
+}
 
 }  // namespace
 
@@ -130,19 +143,21 @@ int main(int argc, char **argv) {
   for (int i = 0; i < M; ++i) envs.push_back(std::make_unique<Env>(cfg, 2 + i));
 
   // Segment-start checkpoints, for backing up.
-  constexpr int R = 32;
+  constexpr int R = 64;
   std::vector<std::unique_ptr<Env>> saves;
   std::vector<size_t> save_len(R);
   for (int i = 0; i < R; ++i) saves.push_back(std::make_unique<Env>(cfg, 100 + i));
 
   std::vector<Action> committed;
   long segment = 0, frontier = 0, simulated = 0;
+  long oldest = 0;  // the earliest segment whose checkpoint the ring still holds
   int fails = 0, salt = 0;
   auto t0 = std::chrono::steady_clock::now();
   bool over = false;
   while (!over) {
     saves[segment % R]->copy_from(cur);
     save_len[segment % R] = committed.size();
+    oldest = std::max(oldest, segment - R + 1);
 
     std::vector<Plan> plans(M);
     for (int i = 0; i < M; ++i) {
@@ -169,26 +184,30 @@ int main(int argc, char **argv) {
       int t = 0;
       bool done = false;
       for (; t < K + L && !done; ++t) {
-        Action a = act(t < K ? plans[i] : Plan{}, o, r);
+        Action a = act(t < K || i % 2 ? plans[i] : Plan{}, o, r);  // odd candidates keep their plan
         if (t < K) out.segment.push_back(a);
         e.step(a.data(), o, &done);
+        if (t == K - 1) out.at_k = e.state_hash();
         if (done) out.died_at = t;
       }
-      float health = e.alive() ? e.health() : 0;
-      out.value = (done ? -1e6 + 1e3 * out.died_at : 0) + (e.experience() - xp0) + 20 * health;
+      out.xp = e.experience() - xp0;
+      out.health = e.alive() ? e.health() : 0;
+      out.crowd = o[CR_OFF_SCALARS + 47] * 32;
 #pragma omp atomic
       simulated += t;
     }
+    int best_xp = 0;
+    for (const Outcome &o : outs) best_xp = std::max(best_xp, o.xp);
     int best = 0;
     for (int i = 1; i < M; ++i)
-      if (outs[i].value > outs[best].value) best = i;
+      if (value(outs[i], best_xp) > value(outs[best], best_xp)) best = i;
     const Outcome &b = outs[best];
 
-    if (b.died_at >= 0 && b.died_at < K && fails < 12) {
-      // Every candidate dies within the segment: back up further each time, with new candidates.
+    if (b.died_at >= 0 && b.died_at < K && fails < 40) {
+      // Every candidate dies within the segment: back up further every other failure, with new candidates.
       ++fails;
       ++salt;
-      long back = std::min<long>({1L << std::min(fails, 4), R - 1, segment});
+      long back = std::min<long>(1L << std::min((fails + 1) / 2, 6), segment - oldest);
       segment -= back;
       cur.copy_from(*saves[segment % R]);
       committed.resize(save_len[segment % R]);
@@ -203,6 +222,10 @@ int main(int argc, char **argv) {
         break;
       }
     }
+    if (!over && cur.state_hash() != b.at_k) {
+      fprintf(stderr, "segment %ld: the commit diverged from its candidate (%d)\n", segment, best);
+      return 1;
+    }
     ++segment;
     if (segment > frontier) frontier = segment, fails = 0;
     double minutes = cur.ticks() / 3600.0;
@@ -213,6 +236,18 @@ int main(int argc, char **argv) {
              minutes, cur.experience(), cur.alive() ? cur.health() : 0.0f, segment, fails, salt,
              simulated * cfg.repeat / el, cur.ticks() / 60.0 / el);
       fflush(stdout);
+    }
+  }
+
+  // The committed actions must reproduce the state the search reached.
+  {
+    Env check(cfg, 1);
+    check.reset(seed, obs.data());
+    bool done = false;
+    for (size_t i = 0; i < committed.size() && !done; ++i) check.step(committed[i].data(), obs.data(), &done);
+    if (check.state_hash() != cur.state_hash()) {
+      fprintf(stderr, "the committed actions do not reproduce the searched run\n");
+      return 1;
     }
   }
 
