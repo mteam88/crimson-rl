@@ -21,3 +21,19 @@ world-check: core
 env-check threads="4" envs="16" seconds="5": core
     {{cxx}} -fms-extensions -I env core/world.cpp env/env.cpp env/env_check.cpp -ldl -pthread -o build/env_check
     ./build/env_check build/core/libcrimson_core.so "node core/wasm_snapshots.mjs upstream/crimson/crimson-core/build/wasm/core.wasm" {{threads}} {{envs}} {{seconds}}
+
+puffer_rev := "42f70d6932c30ac977736f861006809c50168ba9"
+
+# PufferLib 4.0 at the revision bopl pins, and a venv with its locked toolchain (torch, CUDA 13 wheels).
+puffer-setup:
+    [ -d upstream/PufferLib-{{puffer_rev}} ] || (curl -sL https://codeload.github.com/PufferAI/PufferLib/tar.gz/{{puffer_rev}} -o upstream/pufferlib.tar.gz && echo "c8d8b81a6812854e17f86ade232b55d8069871ab17b59ceed405158b371a2845  upstream/pufferlib.tar.gz" | sha256sum -c && tar xzf upstream/pufferlib.tar.gz -C upstream && rm upstream/pufferlib.tar.gz)
+    [ -x .venv/bin/python ] || uv venv --python 3.11 .venv
+    uv pip install --python .venv/bin/python -r puffer/requirements.lock
+    uv pip install --python .venv/bin/python --no-deps --no-build-isolation -e upstream/PufferLib-{{puffer_rev}}
+
+# PufferLib's _C with the env linked in.
+puffer: core
+    .venv/bin/python puffer/build.py
+
+train *args: puffer
+    systemd-run --user --scope --unit=crimson-train-$(date +%s) -p MemoryHigh=12G .venv/bin/python puffer/train.py train {{args}}

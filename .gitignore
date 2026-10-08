@@ -2,3 +2,7 @@ upstream/
 build/
 bench/*
 !bench/*.cpp
+.venv/
+checkpoints/
+logs/
+__pycache__/

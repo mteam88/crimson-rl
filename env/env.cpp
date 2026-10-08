@@ -113,6 +113,12 @@ Lib &Env::lib() {
   return l;
 }
 
+// Every public call leaves the thread's Lib pointing at its own state, never at this world, which
+// another thread may run or destroy next.
+struct Release {
+  ~Release() { thread_lib().release(); }
+};
+
 uint32_t Env::next_seed() { return (uint32_t)splitmix(rng_); }
 
 int Env::experience() const {
@@ -144,6 +150,7 @@ void Env::begin(uint32_t seed) {
 }
 
 void Env::reset(uint32_t seed, float *obs) {
+  Release r;
   begin(seed);
   observe(obs);
 }
@@ -178,6 +185,7 @@ void Env::finish() {
 }
 
 float Env::step(const int *a, float *obs, bool *done) {
+  Release release;
   lib();
   char *b = world_->block;
   auto *player = reinterpret_cast<player_state_t *>(b + layout.player);

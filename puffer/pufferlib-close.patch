@@ -1,0 +1,12 @@
+--- a/pufferlib.cu
++++ b/pufferlib.cu
+@@ -2285,3 +2285,6 @@
+-    cudaGraphExecDestroy(pufferl.train_cudagraph);
+-    for (int i = 0; i < pufferl.hypers.horizon * pufferl.hypers.num_buffers; i++) {
+-        cudaGraphExecDestroy(pufferl.fused_rollout_cudagraphs[i]);
++    if (pufferl.train_cudagraph) cudaGraphExecDestroy(pufferl.train_cudagraph);
++    if (pufferl.fused_rollout_cudagraphs) {
++        for (int i = 0; i < pufferl.hypers.horizon * pufferl.hypers.num_buffers; i++) {
++            if (pufferl.fused_rollout_cudagraphs[i])
++                cudaGraphExecDestroy(pufferl.fused_rollout_cudagraphs[i]);
++        }

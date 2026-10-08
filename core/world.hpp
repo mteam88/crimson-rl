@@ -34,6 +34,9 @@ class Lib {
   // Makes w the world the gameplay code sees. Cheap when it already is current; adopting a
   // world another Lib last ran scans it once.
   void use(World *w);
+  // Points the gameplay code back at the library's own state. Do it when done with a world that
+  // may be destroyed elsewhere: the library's static destructors (at exit) run through the GOT.
+  void release();
 
   // A state symbol's address in world w (or nullptr if it isn't state).
   void *addr(const World *w, const char *symbol) const;
@@ -68,8 +71,10 @@ class Lib {
   std::vector<char> pristine_;
   uint64_t current_ = 0;  // id of the world the GOT points at (ids are never reused, unlike addresses)
   void *sym(const char *name) const;
-  void restore_own();
 };
+
+// How many times a Lib adopted a world another Lib last ran (each scans the world once).
+uint64_t adoptions();
 
 struct World {
   char *block;      // region_size() bytes, mmap'd so untouched pages cost nothing

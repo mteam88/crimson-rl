@@ -43,6 +43,7 @@ std::string private_copy(const std::string &path) {
 
 const size_t PAGE = 4096;
 std::atomic<uint64_t> next_world_id{1};
+std::atomic<uint64_t> adoption_count{0};
 
 }  // namespace
 
@@ -134,11 +135,11 @@ Lib::Lib(const std::string &so_path) : path_(so_path) {
 
 Lib::~Lib() {
   // Static destructors run at dlclose and reach their globals through the GOT: give them the library's own.
-  restore_own();
+  release();
   if (handle_) dlclose(handle_);
 }
 
-void Lib::restore_own() {
+void Lib::release() {
   for (size_t i = 0; i < slots_.size(); ++i) *slots_[i] = reinterpret_cast<uintptr_t>(lo_) + slot_off_[i];
   current_ = 0;
 }
@@ -168,7 +169,7 @@ World *Lib::create() {
 }
 
 void Lib::destroy(World *w) {
-  if (current_ == w->id) restore_own();
+  if (current_ == w->id) release();
   size_t lead = reinterpret_cast<uintptr_t>(lo_) & (PAGE - 1);
   munmap(w->block - lead, lead + (hi_ - lo_));
   delete w;
@@ -201,12 +202,15 @@ void Lib::use(World *w) {
       }
     }
     w->image = base_;
+    adoption_count.fetch_add(1, std::memory_order_relaxed);
   }
   if (current_ == w->id) return;
   uintptr_t base = reinterpret_cast<uintptr_t>(w->block);
   for (size_t i = 0; i < slots_.size(); ++i) *slots_[i] = base + slot_off_[i];
   current_ = w->id;
 }
+
+uint64_t adoptions() { return adoption_count.load(); }
 
 ptrdiff_t Lib::offset(const char *symbol) const {
   char *p = static_cast<char *>(sym(symbol));
