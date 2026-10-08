@@ -10,6 +10,7 @@
 
 #include "cl_build.h"
 #include "crimsonland_types.h"
+#include "crimsonland_ui_state_owner.h"
 #include "world.hpp"
 
 namespace crimson {
@@ -26,7 +27,7 @@ std::mutex core_path_lock;
 // Where the game's state lives in a world. The same in every Lib: they all load one file.
 struct Layout {
   ptrdiff_t player, creatures, shots, rockets, bonuses, pending, dirty, choices, elapsed, stage, active,
-      shock_links, timers[5];
+      shock_links, timers[5], shake;
 };
 Layout layout;
 std::once_flag layout_once;
@@ -58,6 +59,7 @@ void resolve(const Lib &lib) {
   const char *timers[5] = {"bonus_weapon_power_up_timer", "bonus_reflex_boost_timer", "bonus_freeze_timer",
                            "bonus_energizer_timer", "bonus_double_xp_timer"};
   for (int i = 0; i < 5; ++i) layout.timers[i] = off(timers[i], 0);  // aliases into a larger blob: no size of their own
+  layout.shake = off("ui_mouse_blocked", 0) + offsetof(ui_runtime_state_original_t, camera_shake_offset_value);
 }
 
 uint64_t splitmix(uint64_t &s) {
@@ -70,6 +72,7 @@ uint64_t splitmix(uint64_t &s) {
 constexpr uint32_t FIRE = 1, RELOAD = 65536;
 constexpr uint32_t SCHEMES = 0x100 | (3u << 9) | 0x1000;  // pad movement, mouse aim: both human schemes
 constexpr float PI = 3.14159265358979f;
+constexpr float TERRAIN_SIZE = 1024;  // the arena
 
 float lg(float x) { return logf(1.0f + std::max(x, 0.0f)); }
 
@@ -125,6 +128,19 @@ int Env::experience() const {
   return reinterpret_cast<const player_state_t *>(world_->block + layout.player)->experience;
 }
 
+float Env::health() const {
+  return reinterpret_cast<const player_state_t *>(world_->block + layout.player)->health;
+}
+
+void Env::copy_from(const Env &src) {
+  thread_lib().copy(world_, src.world_);
+  rng_ = src.rng_;
+  seed_ = src.seed_;
+  ticks_ = src.ticks_;
+  last_xp_ = src.last_xp_;
+  return_ = src.return_;
+}
+
 bool Env::alive() const {
   return reinterpret_cast<const player_state_t *>(world_->block + layout.player)->health > 0;
 }
@@ -168,11 +184,22 @@ bool Env::tick(const PortableInput &in, const PortableCommand *cmd) {
     put(&count, 4);
     if (cmd) put(cmd, sizeof *cmd);
   }
-  ++ticks_;
+  ticks_ += ok != 0;
   return ok;
 }
 
 void Env::finish() {
+  // A run ranks only once it has finished: idle through the death timer and the game's run-down until
+  // the core refuses a tick, as the recording game would. Shots still in flight can score meanwhile.
+  if (config_.record && !alive()) {
+    PortableInput idle{};
+    idle.flags = SCHEMES;
+    for (int i = 0; i < 600; ++i) {
+      auto *p = reinterpret_cast<const player_state_t *>(world_->block + layout.player);
+      idle.aim_x = p->pos_x, idle.aim_y = p->pos_y;  // the camera stays where it last saw the player
+      if (!tick(idle, nullptr)) break;
+    }
+  }
   int xp = experience();
   stats.runs += 1;
   stats.score += xp;
@@ -199,9 +226,7 @@ float Env::step(const int *a, float *obs, bool *done) {
     in.move_x = cosf(t);
     in.move_y = sinf(t);
   }
-  float t = a[1] * 2 * PI / CR_AIM;
-  in.aim_x = player->pos_x + CR_AIM_DIST * cosf(t);
-  in.aim_y = player->pos_y + CR_AIM_DIST * sinf(t);
+  float aim = a[1] * 2 * PI / CR_AIM;
   in.flags = SCHEMES | (a[2] ? FIRE : 0) | (a[3] ? RELOAD : 0);
 
   // Perks go through the game's own menu key so the choices are drawn when a player's would be; a pick
@@ -221,6 +246,7 @@ float Env::step(const int *a, float *obs, bool *done) {
 
   bool ended = false;
   for (int r = 0; r < config_.repeat && !ended; ++r) {
+    aim_at(aim, &in.aim_x, &in.aim_y);
     bool ok = tick(in, r == 0 && cmd.type ? &cmd : nullptr);
     if (!ok) {
       stats.game_errors += 1;
@@ -238,12 +264,32 @@ float Env::step(const int *a, float *obs, bool *done) {
   if (ended && !alive()) reward -= config_.death_penalty;
   return_ += reward;
   *done = ended;
-  if (ended) {
-    finish();
-    begin(next_seed());
-  }
+  if (ended) finish();
+  if (ended && config_.auto_reset) begin(next_seed());
   observe(obs);
   return reward;
+}
+
+// The aim point CR_AIM_DIST along `angle`, pulled back along the ray into the view a ranked run's
+// cursor can reach: 1024x768 around the camera the previous tick left, centred on the player plus
+// the shake and clamped to the arena (upstream src/crimson/replay/ranked.py RankedTickMonitor).
+// The arena is as wide as the view, so the view always spans x in [0, 1024].
+void Env::aim_at(float angle, float *x, float *y) const {
+  const char *b = world_->block;
+  auto *p = reinterpret_cast<const player_state_t *>(b + layout.player);
+  const float *shake = reinterpret_cast<const float *>(b + layout.shake);
+  float cam_y = 384 - p->pos_y + shake[1];
+  if (cam_y > -1) cam_y = -1;
+  if (cam_y < 768 - TERRAIN_SIZE) cam_y = 768 - TERRAIN_SIZE;
+  const float lo_x = 1, hi_x = 1023, lo_y = 1 - cam_y, hi_y = 767 - cam_y;  // a unit inside the edges
+  float dx = cosf(angle), dy = sinf(angle), reach = CR_AIM_DIST;
+  float px = std::clamp(p->pos_x, lo_x, hi_x), py = std::clamp(p->pos_y, lo_y, hi_y);
+  if (dx > 0) reach = std::min(reach, (hi_x - px) / dx);
+  if (dx < 0) reach = std::min(reach, (lo_x - px) / dx);
+  if (dy > 0) reach = std::min(reach, (hi_y - py) / dy);
+  if (dy < 0) reach = std::min(reach, (lo_y - py) / dy);
+  *x = px + reach * dx;
+  *y = py + reach * dy;
 }
 
 void Env::observe(float *obs) {

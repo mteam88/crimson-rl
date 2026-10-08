@@ -60,7 +60,8 @@
 
 /* Actions, one discrete choice per head:
  *   move    0 = stand, k = walk toward angle (k - 1) * 360 / (CR_MOVE - 1) degrees
- *   aim     aim at angle k * 360 / CR_AIM degrees, CR_AIM_DIST from the player
+ *   aim     aim at angle k * 360 / CR_AIM degrees, CR_AIM_DIST from the player (nearer where the
+ *           ranked 1024x768 view ends: the point stays one a cursor could reach)
  *   fire    hold the trigger
  *   reload  press reload
  *   perk    0 = nothing, 1 = open the perk menu (reveals the choices; the trigger is released that tick),

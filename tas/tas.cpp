@@ -1,0 +1,237 @@
+// A tool-assisted Survival run on a chosen seed: a search over the inputs with save/restore. From the committed
+// state it plays candidate plans in parallel, each for one segment and then a lookahead under a default plan, and
+// commits the segment of the best (survival first, then experience and health). When every candidate dies inside
+// its segment, it backs up some segments (further on each failure) and tries new candidates there.
+// The committed actions then replay in a fresh recording env, which writes the run as a transport (check it with
+// core/ranked_check.mjs).
+// Usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] [max minutes]
+#include <omp.h>
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <memory>
+#include <vector>
+
+#include "env.hpp"
+
+using namespace crimson;
+
+namespace {
+
+constexpr float PI = 3.14159265358979f;
+using Action = std::array<int, CR_NUM_ATNS>;
+
+uint64_t mix(uint64_t z) {
+  z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ull;
+  z = (z ^ (z >> 27)) * 0x94d049bb133111ebull;
+  return z ^ (z >> 31);
+}
+
+// How a candidate moves, aims and picks perks for a while.
+enum Move { FLEE = -1, STRAFE_LEFT = -2, STRAFE_RIGHT = -3 };  // >= 0: a fixed move head value
+struct Plan {
+  int move = FLEE;
+  int aim_rank = 0;   // aim at the k-th nearest creature
+  int perk = -1;      // choice index to take, -1 random
+  float jitter = 0;   // chance per decision of a random move instead
+};
+
+struct Rng {
+  uint64_t s;
+  uint32_t next() { return (uint32_t)(mix(s += 0x9e3779b97f4a7c15ull) >> 32); }
+  float unit() { return next() / 4294967296.0f; }
+};
+
+int move_head(float angle) {
+  int k = (int)lroundf(angle / (2 * PI) * (CR_MOVE - 1));
+  return 1 + ((k % (CR_MOVE - 1)) + (CR_MOVE - 1)) % (CR_MOVE - 1);
+}
+
+// The plan's action for the state in `obs`.
+Action act(const Plan &plan, const float *obs, Rng &rng) {
+  Action a{};
+  const float *s = obs + CR_OFF_SCALARS;
+  const float *c = obs + CR_OFF_CREATURES;
+  // Danger: away from nearby creatures and hostile shots, weighted by closeness, and off the walls.
+  float ax = 0, ay = 0;
+  for (int k = 0; k < CR_CREATURES && c[k * CR_CREATURE_F] > 0; ++k) {
+    const float *r = c + k * CR_CREATURE_F;
+    float d = r[3];
+    if (d > 0.7f) break;
+    float w = 1 / (d * d + 0.004f);
+    ax -= r[4] * w, ay -= r[5] * w;
+  }
+  const float *sh = obs + CR_OFF_SHOTS;
+  for (int k = 0; k < CR_SHOTS && sh[k * CR_SHOT_F] > 0 && sh[k * CR_SHOT_F + 7] > 0; ++k) {
+    const float *r = sh + k * CR_SHOT_F;
+    float d = r[3];
+    if (d > 0.4f) break;
+    float w = 0.5f / (d * d + 0.004f);
+    float len = sqrtf(r[1] * r[1] + r[2] * r[2]) + 1e-6f;
+    ax -= r[1] / len * w, ay -= r[2] / len * w;
+  }
+  float px = s[0] * 1024, py = s[1] * 1024;
+  auto wall = [](float gap) { return gap < 160 ? 40.0f * (160 - gap) / 160 : 0.0f; };
+  float danger = sqrtf(ax * ax + ay * ay);
+  ax += wall(px) - wall(1024 - px), ay += wall(py) - wall(1024 - py);
+  if (danger < 1e-3f) ax += (512 - px) / 512, ay += (512 - py) / 512;  // nothing near: drift to the middle
+
+  float flee = atan2f(ay, ax);
+  if (plan.move >= 0) a[0] = plan.move;
+  else if (plan.move == FLEE) a[0] = move_head(flee);
+  else a[0] = move_head(flee + (plan.move == STRAFE_LEFT ? 1 : -1) * 0.45f * PI);
+  if (plan.jitter > 0 && rng.unit() < plan.jitter) a[0] = rng.next() % CR_MOVE;
+
+  int k = c[0] > 0 ? plan.aim_rank : -1;
+  while (k > 0 && c[k * CR_CREATURE_F] <= 0) --k;
+  if (k >= 0) {
+    float ang = atan2f(c[k * CR_CREATURE_F + 2], c[k * CR_CREATURE_F + 1]);
+    int h = (int)lroundf(ang / (2 * PI) * CR_AIM);
+    a[1] = (h % CR_AIM + CR_AIM) % CR_AIM;
+  }
+  a[2] = 1;
+  bool pending = s[36] > 0, revealed = s[37] > 0;
+  int n = (int)lroundf(s[38] * 7);
+  if (pending) a[4] = !revealed ? 1 : 2 + (plan.perk >= 0 ? plan.perk % n : (int)(rng.next() % n));
+  return a;
+}
+
+struct Outcome {
+  double value;
+  int died_at;  // decision the run ended in, or -1
+  std::vector<Action> segment;
+};
+
+}  // namespace
+
+int main(int argc, char **argv) {
+  if (argc < 4) {
+    fprintf(stderr, "usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] "
+                    "[max minutes]\n");
+    return 2;
+  }
+  set_core_library(argv[1]);
+  uint32_t seed = (uint32_t)strtoul(argv[2], nullptr, 0);
+  const char *out = argv[3];
+  int M = argc > 4 ? atoi(argv[4]) : 64, K = argc > 5 ? atoi(argv[5]) : 8, L = argc > 6 ? atoi(argv[6]) : 120;
+  double max_minutes = argc > 7 ? atof(argv[7]) : 0;
+
+  EnvConfig cfg;
+  cfg.auto_reset = false;
+  std::vector<float> obs(CR_OBS_SIZE);
+  Env cur(cfg, 1);
+  cur.reset(seed, obs.data());
+  std::vector<std::unique_ptr<Env>> envs;
+  std::vector<std::vector<float>> obs_k(M, std::vector<float>(CR_OBS_SIZE));
+  for (int i = 0; i < M; ++i) envs.push_back(std::make_unique<Env>(cfg, 2 + i));
+
+  // Segment-start checkpoints, for backing up.
+  constexpr int R = 32;
+  std::vector<std::unique_ptr<Env>> saves;
+  std::vector<size_t> save_len(R);
+  for (int i = 0; i < R; ++i) saves.push_back(std::make_unique<Env>(cfg, 100 + i));
+
+  std::vector<Action> committed;
+  long segment = 0, frontier = 0, simulated = 0;
+  int fails = 0, salt = 0;
+  auto t0 = std::chrono::steady_clock::now();
+  bool over = false;
+  while (!over) {
+    saves[segment % R]->copy_from(cur);
+    save_len[segment % R] = committed.size();
+
+    std::vector<Plan> plans(M);
+    for (int i = 0; i < M; ++i) {
+      Rng r{mix(seed ^ mix(segment * 1000003 + salt * 7919 + i))};
+      Plan &p = plans[i];
+      if (i == 0) continue;  // the default plan always runs
+      int pick = r.next() % 20;
+      p.move = pick < 6 ? FLEE : pick < 9 ? STRAFE_LEFT : pick < 12 ? STRAFE_RIGHT : (int)(r.next() % CR_MOVE);
+      p.aim_rank = std::min<int>(r.next() % 4, 2);
+      p.perk = i % 7;
+      p.jitter = r.next() % 3 == 0 ? 0.25f : 0;
+    }
+    std::vector<Outcome> outs(M);
+#pragma omp parallel for schedule(dynamic, 1)
+    for (int i = 0; i < M; ++i) {
+      Env &e = *envs[i];
+      float *o = obs_k[i].data();
+      e.copy_from(cur);
+      e.observe(o);
+      int xp0 = e.experience();
+      Rng r{mix(seed ^ mix(segment * 31 + salt * 17 + i + 1))};
+      Outcome &out = outs[i];
+      out.died_at = -1;
+      int t = 0;
+      bool done = false;
+      for (; t < K + L && !done; ++t) {
+        Action a = act(t < K ? plans[i] : Plan{}, o, r);
+        if (t < K) out.segment.push_back(a);
+        e.step(a.data(), o, &done);
+        if (done) out.died_at = t;
+      }
+      float health = e.alive() ? e.health() : 0;
+      out.value = (done ? -1e6 + 1e3 * out.died_at : 0) + (e.experience() - xp0) + 20 * health;
+#pragma omp atomic
+      simulated += t;
+    }
+    int best = 0;
+    for (int i = 1; i < M; ++i)
+      if (outs[i].value > outs[best].value) best = i;
+    const Outcome &b = outs[best];
+
+    if (b.died_at >= 0 && b.died_at < K && fails < 12) {
+      // Every candidate dies within the segment: back up further each time, with new candidates.
+      ++fails;
+      ++salt;
+      long back = std::min<long>({1L << std::min(fails, 4), R - 1, segment});
+      segment -= back;
+      cur.copy_from(*saves[segment % R]);
+      committed.resize(save_len[segment % R]);
+      continue;
+    }
+    for (const Action &a : b.segment) {
+      bool done;
+      cur.step(a.data(), obs.data(), &done);
+      committed.push_back(a);
+      if (done) {
+        over = true;
+        break;
+      }
+    }
+    ++segment;
+    if (segment > frontier) frontier = segment, fails = 0;
+    double minutes = cur.ticks() / 3600.0;
+    if (max_minutes > 0 && minutes >= max_minutes) over = true;
+    if (segment % 50 == 0 || over) {
+      double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+      printf("%6.2f min  xp %7d  health %5.1f  segment %ld  fails %d  salt %d  %.0f sim ticks/s  %.1fx realtime\n",
+             minutes, cur.experience(), cur.alive() ? cur.health() : 0.0f, segment, fails, salt,
+             simulated * cfg.repeat / el, cur.ticks() / 60.0 / el);
+      fflush(stdout);
+    }
+  }
+
+  // Replay the committed actions in a recording env: the transport, and the run played out to its end.
+  EnvConfig rcfg = cfg;
+  rcfg.record = true;
+  Env rec(rcfg, 1);
+  rec.reset(seed, obs.data());
+  bool done = false;
+  for (size_t i = 0; i < committed.size() && !done; ++i) rec.step(committed[i].data(), obs.data(), &done);
+  if (!done) {
+    fprintf(stderr, "stopped at the time limit: the run is unfinished and will not rank\n");
+    return 1;
+  }
+  const std::vector<uint8_t> &t = rec.last_transport();
+  FILE *f = fopen(out, "wb");
+  if (!f || fwrite(t.data(), 1, t.size(), f) != t.size()) return 1;
+  fclose(f);
+  printf("seed %u: experience %d (search saw %d), %.2f minutes; wrote %s\n", seed, rec.last_score(),
+         cur.experience(), rec.ticks() / 3600.0, out);
+  return 0;
+}

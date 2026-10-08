@@ -20,7 +20,14 @@ world-check: core
 
 env-check threads="4" envs="16" seconds="5": core
     {{cxx}} -fms-extensions -I env core/world.cpp env/env.cpp env/env_check.cpp -ldl -pthread -o build/env_check
-    ./build/env_check build/core/libcrimson_core.so "node core/wasm_snapshots.mjs upstream/crimson/crimson-core/build/wasm/core.wasm" {{threads}} {{envs}} {{seconds}}
+    ./build/env_check build/core/libcrimson_core.so "node core/wasm_snapshots.mjs upstream/crimson/crimson-core/build/wasm/core.wasm" "node core/ranked_check.mjs upstream/crimson/crimson-core/build/wasm/core.wasm" {{threads}} {{envs}} {{seconds}}
+
+# A tool-assisted run on `seed` (tas/tas.cpp; args: candidates segment lookahead max-minutes), then the
+# leaderboard's ranked check of the transport it wrote.
+tas seed out="build/tas.bin" *args: core
+    {{cxx}} -fms-extensions -fopenmp -I env core/world.cpp env/env.cpp tas/tas.cpp -ldl -pthread -o build/tas
+    systemd-run --user --scope --unit=crimson-tas-$(date +%s%N) -p MemoryHigh=12G ./build/tas build/core/libcrimson_core.so {{seed}} {{out}} {{args}}
+    node core/ranked_check.mjs upstream/crimson/crimson-core/build/wasm/core.wasm < {{out}}
 
 puffer_rev := "42f70d6932c30ac977736f861006809c50168ba9"
 

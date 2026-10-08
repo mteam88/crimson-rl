@@ -1,8 +1,9 @@
 // Checks and benchmarks the env (env/env.cpp) with a scripted policy that reads its observation:
 //  1. observations are finite; prints each section's largest magnitude, for calibrating the scales;
-//  2. a recorded run, perk menu and picks included, replays through the WASM verifier snapshot-for-snapshot;
+//  2. a recorded run, perk menu and picks included, replays through the WASM verifier snapshot-for-snapshot,
+//     and passes the leaderboard's ranked checks (core/ranked_check.mjs) with the score we derived;
 //  3. throughput with observations, T threads x W envs (envs reset on the main thread, stepped on workers).
-// Usage: env_check <libcrimson_core.so> <reference command> [threads] [envs per thread] [seconds]
+// Usage: env_check <libcrimson_core.so> <reference command> <ranked command> [threads] [envs per thread] [seconds]
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -52,13 +53,14 @@ static void expect(bool ok, const char *what) {
 }
 
 int main(int argc, char **argv) {
-  if (argc < 3) {
-    fprintf(stderr, "usage: env_check <libcrimson_core.so> <reference command> [threads] [envs] [seconds]\n");
+  if (argc < 4) {
+    fprintf(stderr, "usage: env_check <libcrimson_core.so> <reference command> <ranked command> [threads] [envs] "
+                    "[seconds]\n");
     return 2;
   }
   set_core_library(argv[1]);
-  int threads = argc > 3 ? atoi(argv[3]) : 4, per = argc > 4 ? atoi(argv[4]) : 16;
-  double seconds = argc > 5 ? atof(argv[5]) : 5;
+  int threads = argc > 4 ? atoi(argv[4]) : 4, per = argc > 5 ? atoi(argv[5]) : 16;
+  double seconds = argc > 6 ? atof(argv[6]) : 5;
 
   // 1 and 2: one recorded env, played until a run with perks taken finishes.
   {
@@ -160,6 +162,16 @@ int main(int argc, char **argv) {
       theirs.push_back(fnv(buf.data(), n));
     }
     pclose(p);
+    std::string ranked = std::string(argv[3]) + " < " + tmpl;
+    p = popen(ranked.c_str(), "r");
+    char verdict[512] = {};
+    size_t got = fread(verdict, 1, sizeof verdict - 1, p);
+    int status = pclose(p);
+    verdict[got] = 0;
+    printf("ranked check: %s", verdict);
+    char want[64];
+    snprintf(want, sizeof want, "\"experience\":%d,", env.last_score());
+    expect(status == 0 && strstr(verdict, want), "the recorded run ranks, with the score we derived");
     unlink(tmpl);
     char msg[160];
     snprintf(msg, sizeof msg, "a recorded run replays through the WASM verifier (%zu snapshots, ours %zu)",

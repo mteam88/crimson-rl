@@ -22,6 +22,7 @@ struct EnvConfig {
   float death_penalty = 1.0f;
   float alive_reward = 0.0f;  // per second alive
   bool record = false;       // keep the run's ticks, for replays (transport())
+  bool auto_reset = true;    // start the next run when one ends; off for search, which keeps the ended state
 };
 
 // Accumulated over finished runs, for logging; reset by the caller.
@@ -44,7 +45,13 @@ class Env {
   // already started, and obs is its first observation).
   float step(const int *actions, float *obs, bool *done);
 
+  // Takes over src's run: its world and the run's progress (not the recording or stats). A save/restore.
+  void copy_from(const Env &src);
+  // Writes the observation of the current state.
+  void observe(float *obs);
+
   uint32_t seed() const { return seed_; }
+  float health() const;
   long ticks() const { return ticks_; }
   int experience() const;
   bool alive() const;
@@ -73,7 +80,7 @@ class Env {
   void begin(uint32_t seed);
   void finish();
   bool tick(const PortableInput &in, const PortableCommand *cmd);
-  void observe(float *obs);
+  void aim_at(float angle, float *x, float *y) const;
 };
 
 // Where each thread loads the core library from; defaults to $CRIMSON_CORE_SO.
