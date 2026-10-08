@@ -47,6 +47,10 @@ struct Rng {
   float unit() { return next() / 4294967296.0f; }
 };
 
+// Perks whose death comes later than any lookahead sees: Grim Deal kills on pick, after its experience lands;
+// Death Clock kills 30 seconds later, invulnerable until then.
+bool fatal_perk(int id) { return id == 0x08 || id == 0x2F; }
+
 int move_head(float angle) {
   int k = (int)lroundf(angle / (2 * PI) * (CR_MOVE - 1));
   return 1 + ((k % (CR_MOVE - 1)) + (CR_MOVE - 1)) % (CR_MOVE - 1);
@@ -97,7 +101,17 @@ Action act(const Plan &plan, const float *obs, Rng &rng) {
   a[2] = 1;
   bool pending = s[36] > 0, revealed = s[37] > 0;
   int n = (int)lroundf(s[38] * 7);
-  if (pending) a[4] = !revealed ? 1 : 2 + (plan.perk >= 0 ? plan.perk % n : (int)(rng.next() % n));
+  if (pending && !revealed) a[4] = 1;
+  if (pending && revealed) {
+    const float *choices = obs + CR_OFF_IDS + 2;
+    int want = plan.perk >= 0 ? plan.perk % n : (int)(rng.next() % n);
+    a[4] = 2 + want;
+    for (int j = 0; j < n; ++j)
+      if (!fatal_perk((int)choices[(want + j) % n])) {
+        a[4] = 2 + (want + j) % n;
+        break;
+      }
+  }
   return a;
 }
 
@@ -170,6 +184,9 @@ int main(int argc, char **argv) {
       p.perk = i % 7;
       p.jitter = r.next() % 3 == 0 ? 0.25f : 0;
     }
+    // A perk shapes the rest of the run: judge segments that may take one over a longer lookahead.
+    cur.observe(obs.data());
+    int lookahead = obs[CR_OFF_SCALARS + 36] > 0 ? 3 * L : L;
     std::vector<Outcome> outs(M);
 #pragma omp parallel for schedule(dynamic, 1)
     for (int i = 0; i < M; ++i) {
@@ -183,7 +200,7 @@ int main(int argc, char **argv) {
       out.died_at = -1;
       int t = 0;
       bool done = false;
-      for (; t < K + L && !done; ++t) {
+      for (; t < K + lookahead && !done; ++t) {
         Action a = act(t < K || i % 2 ? plans[i] : Plan{}, o, r);  // odd candidates keep their plan
         if (t < K) out.segment.push_back(a);
         e.step(a.data(), o, &done);
