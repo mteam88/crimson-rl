@@ -214,6 +214,14 @@ ptrdiff_t Lib::offset(const char *symbol) const {
   return p - lo_;
 }
 
+size_t Lib::size(const char *symbol) const {
+  void *p = sym(symbol);
+  Dl_info info;
+  ElfW(Sym) *entry = nullptr;
+  if (!p || !dladdr1(p, &info, reinterpret_cast<void **>(&entry), RTLD_DL_SYMENT) || !entry) return 0;
+  return entry->st_size;
+}
+
 void *Lib::addr(const World *w, const char *symbol) const {
   ptrdiff_t off = offset(symbol);
   return off < 0 ? nullptr : w->block + off;

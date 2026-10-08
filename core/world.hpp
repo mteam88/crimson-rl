@@ -39,6 +39,8 @@ class Lib {
   void *addr(const World *w, const char *symbol) const;
   // A state symbol's offset in the region, for repeated lookups; -1 if it isn't state.
   ptrdiff_t offset(const char *symbol) const;
+  // A symbol's size in bytes (from the dynamic symbol table), 0 if unknown.
+  size_t size(const char *symbol) const;
   size_t region_size() const { return hi_ - lo_; }
 
   // The core's API, bound to this copy. Call use() first.

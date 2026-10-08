@@ -17,3 +17,7 @@ core:
 world-check: core
     {{cxx}} core/world.cpp core/world_check.cpp -ldl -pthread -o build/world_check
     ./build/world_check build/core/libcrimson_core.so "node core/wasm_snapshots.mjs upstream/crimson/crimson-core/build/wasm/core.wasm"
+
+env-check threads="4" envs="16" seconds="5": core
+    {{cxx}} -fms-extensions -I env core/world.cpp env/env.cpp env/env_check.cpp -ldl -pthread -o build/env_check
+    ./build/env_check build/core/libcrimson_core.so "node core/wasm_snapshots.mjs upstream/crimson/crimson-core/build/wasm/core.wasm" {{threads}} {{envs}} {{seconds}}
