@@ -1,9 +1,12 @@
 """Turns a transport (upstream crimson-core's input stream, as env/tas recordings write it) into a .crd replay, the
-file crimson.land takes. The run must use the ranked Survival profile; its result is derived by upstream's own
-Python simulation (not the core we recorded with), then `crimson replay verify` can check the file independently.
+file crimson.land takes. The run must use the ranked Survival profile. Its result is derived by upstream's own
+Python simulation (not the core we recorded with), then `crimson replay verify` can check the file independently; or,
+given `result.json` (core/ranked_check.mjs's output), it is the WASM core's, which is what crimson.land checks against.
+Long runs need the latter: the Python simulation drifts from the WASM core (RNG draws, XP rounding past 2^24).
 
-Run with upstream's environment: upstream/crimson/.venv/bin/python tools/crd.py <transport> <out.crd>
+Run with upstream's environment: upstream/crimson/.venv/bin/python tools/crd.py <transport> <out.crd> [result.json]
 """
+import json
 import platform
 import struct
 import subprocess
@@ -17,7 +20,7 @@ from crimson.replay.ranked import ranked_run_spec
 from crimson.replay.recorder import ReplayRecorder
 from crimson.replay.types import Recorder, ReplayTick
 from crimson.sim.commands import PerkMenuOpenCommand, PerkPickCommand
-from crimson.sim.run_result import RunOutcome, RunResult
+from crimson.sim.run_result import PlayerRunResult, RunOutcome, RunResult
 
 CONFIG_WORDS = 65
 
@@ -30,7 +33,7 @@ def config_words(run):
             int(run.hardcore), run.quest_fail_retry_count, int(run.preserve_bugs), *run.status.weapon_usage_counts]
 
 
-def main(src, out):
+def main(src, out, derived=None):
     data = Path(src).read_bytes()
     words = list(struct.unpack_from(f"<{CONFIG_WORDS}I", data))
     run = ranked_run_spec(GameMode.SURVIVAL, seed=words[0])
@@ -54,10 +57,18 @@ def main(src, out):
                             else PerkMenuOpenCommand(player_index=0))
         recorder.record(ReplayTick(inputs=[[mx, my, ax, ay, flags]], commands=commands))
 
-    # Derive the result by simulating, then record it.
-    placeholder = RunResult(outcome=RunOutcome.INCOMPLETE, elapsed_ms=0, kills=0, shots_fired=0, shots_hit=0,
-                            rng_state=0, pending_perks=0, quest_final_ms=None, players=())
-    result = build_verify_playback_driver(recorder.finish(placeholder)).run()
+    if derived:
+        r = json.loads(Path(derived).read_text())["result"]
+        result = RunResult(outcome=RunOutcome(r["outcome"]), elapsed_ms=r["elapsed_ms"], kills=r["kills"],
+                           shots_fired=r["shots_fired"], shots_hit=r["shots_hit"], rng_state=r["rng_state"],
+                           pending_perks=r["pending_perks"], quest_final_ms=None,
+                           players=(PlayerRunResult(experience=r["experience"], health=float(r["health"]),
+                                                    most_used_weapon_id=r["most_used_weapon_id"]),))
+    else:
+        # Derive the result by simulating, then record it.
+        placeholder = RunResult(outcome=RunOutcome.INCOMPLETE, elapsed_ms=0, kills=0, shots_fired=0, shots_hit=0,
+                                rng_state=0, pending_perks=0, quest_final_ms=None, players=())
+        result = build_verify_playback_driver(recorder.finish(placeholder)).run()
     replay = recorder.finish(result)
     dump_replay_file(Path(out), replay)
     p = result.players[0]

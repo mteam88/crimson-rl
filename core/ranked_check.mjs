@@ -44,13 +44,22 @@ for (; tick < records.length && !reason; tick++) {
   else updateCamera();
 }
 e.portable_snapshot();
+// The result exactly as verify.ts deriveResult computes it (a .crd must claim it field for field).
+const i32 = (name) => field(e, name) | 0;
+let mostUsed = 1;
+for (let w = 2; w < 53; w++) if (i32(`globals.weapon_usage_time[${w}]`) > i32(`globals.weapon_usage_time[${mostUsed}]`)) mostUsed = w;
+const fired = Math.max(0, i32("globals.highscore_record_shots_fired"));
 const result = {
   outcome: field(e, "globals.game_state_pending") === GAME_OVER ? "death" : "incomplete",
   experience: field(e, "players[0].experience"),
-  elapsed_ms: field(e, "globals.run_elapsed_ms") | 0,
+  elapsed_ms: i32("globals.run_elapsed_ms"),
   kills: field(e, "globals.creature_kill_count"),
   health: field(e, "players[0].health", true),
   pending_perks: field(e, "globals.perk_pending_count"),
+  shots_fired: fired,
+  shots_hit: Math.max(0, Math.min(i32("globals.highscore_record_shots_hit"), fired)),
+  rng_state: field(e, "globals.rng"),
+  most_used_weapon_id: mostUsed,
 };
 if (!reason && result.outcome !== "death") reason = "unfinished: a ranked Survival run ends in death";
 console.log(JSON.stringify({ ok: !reason, reason, ticks: records.length, result }));
