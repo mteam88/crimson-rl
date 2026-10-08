@@ -1,0 +1,14 @@
+#!/bin/bash
+# ffmpeg for `crimson replay render` on builds without libx264 (Fedora's): encodes with NVENC instead,
+# mapping -preset/-crf to NVENC's -preset p5 / -cq.
+args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    libx264) args+=(h264_nvenc) ;;
+    -preset) args+=(-preset p5); shift ;;
+    -crf) args+=(-cq "$2"); shift ;;
+    *) args+=("$1") ;;
+  esac
+  shift
+done
+exec ffmpeg "${args[@]}"

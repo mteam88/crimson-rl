@@ -49,3 +49,8 @@ puffer: core
 
 train *args: puffer
     systemd-run --user --scope --unit=crimson-train-$(date +%s) -p MemoryHigh=12G .venv/bin/python puffer/train.py train {{args}}
+
+# A .crd replay as video, through upstream's renderer (opens a window); tools/ffmpeg-nvenc stands in for an
+# ffmpeg without libx264.
+render replay out *args:
+    upstream/crimson/.venv/bin/crimson replay render {{replay}} --out {{out}} --ffmpeg-bin tools/ffmpeg-nvenc --overwrite {{args}}
