@@ -4,6 +4,7 @@
 //     and passes the leaderboard's ranked checks (core/ranked_check.mjs) with the score we derived;
 //  3. throughput with observations, T threads x W envs (envs reset on the main thread, stepped on workers).
 // Usage: env_check <libcrimson_core.so> <reference command> <ranked command> [threads] [envs per thread] [seconds]
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -20,7 +21,8 @@
 
 using namespace crimson;
 
-// Aims at the nearest creature, walks away from it, fires, opens the perk menu then takes a random choice.
+// Aims at the nearest creature, walks away from it, fires, opens the perk menu then takes a random choice; now and
+// then it picks blind or lets an open menu close unpicked, so picks come with no menu open too.
 static void script(const float *obs, uint64_t &rng, int *a) {
   rng = rng * 6364136223846793005ull + 1442695040888963407ull;
   uint32_t r = rng >> 33;
@@ -37,7 +39,8 @@ static void script(const float *obs, uint64_t &rng, int *a) {
   a[2] = 1;
   a[3] = (r >> 12) % 97 == 0;
   bool pending = obs[CR_OFF_SCALARS + 36] > 0, revealed = obs[CR_OFF_SCALARS + 37] > 0;
-  a[4] = !pending ? 0 : !revealed ? 1 : 2 + (r >> 16) % 5;
+  int pick = 2 + (r >> 16) % 5;
+  a[4] = !pending ? 0 : !revealed ? ((r >> 20) % 4 ? 1 : pick) : (r >> 22) % 4 ? pick : 0;
 }
 
 static uint64_t fnv(const uint32_t *p, int n) {
@@ -77,11 +80,20 @@ int main(int argc, char **argv) {
     bool finite = true;
     uint64_t rng = 7;
     int a[CR_NUM_ATNS];
-    long decisions = 0;
+    long decisions = 0, rerolled = 0, reopened = 0, deferred_all = 0;
     while (true) {
       script(obs.data(), rng, a);
       bool done;
+      std::vector<float> ids(obs.begin() + CR_OFF_IDS + 2, obs.begin() + CR_OFF_IDS + 9);
+      bool revealed = obs[CR_OFF_SCALARS + 37] > 0;
+      double deferred = env.stats.picks_deferred;
       env.step(a, obs.data(), &done);
+      // A pick deferred to reopen a menu whose choices were revealed keeps them.
+      deferred_all += env.stats.picks_deferred > deferred;
+      if (!done && revealed && env.stats.picks_deferred > deferred) {
+        ++reopened;
+        rerolled += !std::equal(ids.begin(), ids.end(), obs.begin() + CR_OFF_IDS + 2);
+      }
       ++decisions;
       for (int s = 0; s < 8; ++s)
         for (int i = offs[s]; i < offs[s + 1]; ++i) {
@@ -102,13 +114,14 @@ int main(int argc, char **argv) {
           field_max[CR_SCALARS + CR_CREATURE_F + CR_SHOT_F + i] =
               std::max(field_max[CR_SCALARS + CR_CREATURE_F + CR_SHOT_F + i],
                        fabsf(obs[CR_OFF_BONUSES + k * CR_BONUS_F + i]));
-      if (done && env.stats.perks > 0) break;
+      if (done && env.stats.perks > 0 && reopened > 0) break;
       if (done) env.stats = EnvStats{};
       if (decisions > 2000000) break;
     }
-    printf("run: seed %u, score %d, %.0f ticks, %.0f perks, %.0f menu opens failed, %.0f game errors\n",
-           env.seed(), env.last_score(), env.stats.ticks, env.stats.perks, env.stats.reveal_failed,
-           env.stats.game_errors);
+    printf("run: seed %u, score %d, %.0f ticks, %.0f perks, %.0f picks deferred to an open, %.0f menu opens failed, "
+           "%.0f game errors; over every run, %ld picks deferred, %ld reopening revealed choices (%ld rerolled)\n",
+           env.seed(), env.last_score(), env.stats.ticks, env.stats.perks, env.stats.picks_deferred,
+           env.stats.reveal_failed, env.stats.game_errors, deferred_all, reopened, rerolled);
     for (int s = 0; s < 8; ++s) printf("  %-9s max |x| %.3g\n", names[s], maxabs[s]);
     auto dump = [&](const char *what, int base, int n) {
       printf("  %s field max:", what);
@@ -122,6 +135,8 @@ int main(int argc, char **argv) {
     expect(finite, "observations are finite");
     expect(env.stats.game_errors == 0, "the core accepted every input and command");
     expect(env.stats.perks > 0 && env.stats.reveal_failed == 0, "perk menu opens and picks work");
+    expect(deferred_all > 0 && reopened > 0 && rerolled == 0,
+           "a pick with no menu open opens it instead, keeping revealed choices");
 
     // Replay the recorded run: our own world's snapshots against the WASM verifier's.
     const std::vector<uint8_t> &t = env.last_transport();

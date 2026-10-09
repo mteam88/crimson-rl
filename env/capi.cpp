@@ -41,7 +41,7 @@ extern "C" float crimson_env_step(CrimsonEnv *env, const int *actions, float *ob
 
 extern "C" void crimson_env_take_stats(CrimsonEnv *env, CrimsonEnvStats *out) {
   const crimson::EnvStats &s = env->env.stats;
-  *out = {s.runs, s.score, s.ticks, s.episode_return, s.perks, s.reveal_failed, s.game_errors};
+  *out = {s.runs, s.score, s.ticks, s.episode_return, s.perks, s.reveal_failed, s.game_errors, s.picks_deferred};
   env->env.stats = {};
 }
 

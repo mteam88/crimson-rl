@@ -4,8 +4,14 @@ Python simulation (not the core we recorded with), then `crimson replay verify` 
 given `result.json` (core/ranked_check.mjs's output), it is the WASM core's, which is what crimson.land checks against.
 Long runs need the latter: the Python simulation drifts from the WASM core (RNG draws, XP rounding past 2^24).
 
-Run with upstream's environment: upstream/crimson/.venv/bin/python tools/crd.py <transport> <out.crd> [result.json]
+The replay is upstream's current format (32): the simulation rules this build plays (REPLAY_RULES), and the pilot
+the run declares, from --pilot-name/--pilot-model/--pilot-url (none without a name; a run that names one ranks on the
+bot boards).
+
+Run with upstream's environment:
+upstream/crimson/.venv/bin/python tools/crd.py <transport> <out.crd> [result.json] [--pilot-name NAME ...]
 """
+import argparse
 import json
 import platform
 import struct
@@ -18,7 +24,7 @@ from crimson.replay.codec import dump_replay_file
 from crimson.replay.driver.playback_driver import build_verify_playback_driver
 from crimson.replay.ranked import ranked_run_spec
 from crimson.replay.recorder import ReplayRecorder
-from crimson.replay.types import Recorder, ReplayTick
+from crimson.replay.types import Pilot, Recorder, ReplayTick
 from crimson.sim.commands import PerkMenuOpenCommand, PerkPickCommand
 from crimson.sim.run_result import PlayerRunResult, RunOutcome, RunResult
 
@@ -33,7 +39,7 @@ def config_words(run):
             int(run.hardcore), run.quest_fail_retry_count, int(run.preserve_bugs), *run.status.weapon_usage_counts]
 
 
-def main(src, out, derived=None):
+def main(src, out, derived=None, pilot=None):
     data = Path(src).read_bytes()
     words = list(struct.unpack_from(f"<{CONFIG_WORDS}I", data))
     run = ranked_run_spec(GameMode.SURVIVAL, seed=words[0])
@@ -45,6 +51,7 @@ def main(src, out, derived=None):
     recorder = ReplayRecorder(run)
     recorder._recorder = Recorder(client="crimson-rl", version=f"0.1.0+g{sha.stdout.strip() or 'unknown'}",
                                   platform=f"{sys.platform}-{platform.machine()}")
+    recorder._pilot = pilot  # the flags', not CRIMSON_PILOT_* from the environment
     at = CONFIG_WORDS * 4
     while at < len(data):
         mx, my, ax, ay, flags, count = struct.unpack_from("<4f2I", data, at)
@@ -73,8 +80,20 @@ def main(src, out, derived=None):
     dump_replay_file(Path(out), replay)
     p = result.players[0]
     print(f"{out}: seed {run.seed}, {len(replay.ticks)} ticks, {result.outcome}, experience {p.experience}, "
-          f"{result.kills} kills, game_version {replay.game_version}")
+          f"{result.kills} kills, game_version {replay.game_version}, format {replay.format_version}, "
+          f"rules {replay.rules}, pilot {replay.pilot}")
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    ap.add_argument("transport")
+    ap.add_argument("out")
+    ap.add_argument("result", nargs="?", help="core/ranked_check.mjs's output: the result as the WASM core derives it")
+    ap.add_argument("--pilot-name", default="", help="the bot's name; none declared when empty")
+    ap.add_argument("--pilot-model", default="", help='the model or tool behind it, e.g. "TAS"')
+    ap.add_argument("--pilot-url", default="", help="an https:// page about it")
+    a = ap.parse_args()
+    if not a.pilot_name and (a.pilot_model or a.pilot_url):
+        ap.error("--pilot-model and --pilot-url need --pilot-name")
+    main(a.transport, a.out, a.result,
+         Pilot(name=a.pilot_name, model=a.pilot_model, url=a.pilot_url) if a.pilot_name else None)

@@ -27,7 +27,8 @@ struct EnvConfig {
 
 // Accumulated over finished runs, for logging; reset by the caller.
 struct EnvStats {
-  double runs = 0, score = 0, ticks = 0, episode_return = 0, perks = 0, reveal_failed = 0, game_errors = 0;
+  double runs = 0, score = 0, ticks = 0, episode_return = 0, perks = 0, reveal_failed = 0, game_errors = 0,
+         picks_deferred = 0;  // picks asked for with no menu open, which opened it instead
 };
 
 class Env {

@@ -16,7 +16,7 @@ typedef struct {
 } CrimsonEnvConfig;
 
 typedef struct {
-  double runs, score, ticks, episode_return, perks, reveal_failed, game_errors;
+  double runs, score, ticks, episode_return, perks, reveal_failed, game_errors, picks_deferred;
 } CrimsonEnvStats;
 
 /* core_so: the world-swappable core library; NULL keeps the current one ($CRIMSON_CORE_SO by default). */

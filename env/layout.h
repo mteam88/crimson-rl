@@ -66,8 +66,11 @@
  *           ranked 1024x768 view ends: the point stays one a cursor could reach)
  *   fire    hold the trigger
  *   reload  press reload
- *   perk    0 = nothing, 1 = open the perk menu (reveals the choices; the trigger is released that tick),
- *           2 + i = take choice i. Ignored when no perk is pending or the choice doesn't exist. */
+ *   perk    0 = nothing, 1 = open the perk menu on the decision's last tick (reveals the choices; the trigger
+ *           is released that tick), 2 + i = take choice i on the decision's first tick. A pick is legal only right
+ *           after the menu opened (upstream #589): with no menu open it opens the menu instead, keeping revealed
+ *           choices, and the next decision's pick lands. Ignored when no perk is pending or the choice doesn't
+ *           exist. */
 #define CR_NUM_ATNS 5
 #define CR_MOVE 17
 #define CR_AIM 72

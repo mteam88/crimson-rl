@@ -29,9 +29,10 @@ tas seed out="build/tas.bin" *args: core
     systemd-run --user --scope --unit=crimson-tas-$(date +%s%N) -p MemoryHigh=12G ./build/tas build/core/libcrimson_core.so {{seed}} {{out}} {{args}}
     node core/ranked_check.mjs upstream/crimson/crimson-core/build/wasm/core.wasm < {{out}}
 
-# A transport as a .crd replay (tools/crd.py), then upstream's own verifier on it.
-crd transport out:
-    upstream/crimson/.venv/bin/python tools/crd.py {{transport}} {{out}}
+# A transport as a .crd replay (tools/crd.py; args: [result.json] [--pilot-name N --pilot-model M --pilot-url U]),
+# then upstream's own verifier on it.
+crd transport out *args:
+    upstream/crimson/.venv/bin/python tools/crd.py {{transport}} {{out}} {{args}}
     upstream/crimson/.venv/bin/crimson replay verify {{out}}
 
 puffer_rev := "42f70d6932c30ac977736f861006809c50168ba9"

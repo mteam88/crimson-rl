@@ -19,7 +19,8 @@ from bc import HEADS, OBS, ROOT, load_env_lib, make_policy  # noqa: E402
 
 class Stats(ctypes.Structure):
     _fields_ = [(name, ctypes.c_double) for name in
-                ("runs", "score", "ticks", "episode_return", "perks", "reveal_failed", "game_errors")]
+                ("runs", "score", "ticks", "episode_return", "perks", "reveal_failed", "game_errors",
+                 "picks_deferred")]
 
 
 def main():

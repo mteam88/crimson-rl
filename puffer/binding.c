@@ -8,7 +8,7 @@
 #include "layout.h"
 
 typedef struct {
-    float perf, score, episode_return, episode_length, perks, reveal_failed, game_errors;
+    float perf, score, episode_return, episode_length, perks, reveal_failed, game_errors, picks_deferred;
     float n; /* runs; must be last */
 } Log;
 
@@ -31,6 +31,7 @@ static void take_stats(Crimson *e) {
     e->log.perks += (float)s.perks;
     e->log.reveal_failed += (float)s.reveal_failed;
     e->log.game_errors += (float)s.game_errors;
+    e->log.picks_deferred += (float)s.picks_deferred;
     e->log.n += (float)s.runs;
 }
 
@@ -99,4 +100,5 @@ void my_log(Log *log, Dict *out) {
     dict_set(out, "perks", log->perks);
     dict_set(out, "reveal_failed", log->reveal_failed);
     dict_set(out, "game_errors", log->game_errors);
+    dict_set(out, "picks_deferred", log->picks_deferred);
 }

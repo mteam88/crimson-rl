@@ -26,7 +26,7 @@ std::mutex core_path_lock;
 
 // Where the game's state lives in a world. The same in every Lib: they all load one file.
 struct Layout {
-  ptrdiff_t player, creatures, shots, rockets, bonuses, pending, dirty, choices, elapsed, stage, active,
+  ptrdiff_t player, creatures, shots, rockets, bonuses, pending, dirty, choices, menu_open, elapsed, stage, active,
       shock_links, timers[5], shake, weapons;
 };
 Layout layout;
@@ -52,6 +52,7 @@ void resolve(const Lib &lib) {
   layout.pending = off("perk_pending_count", 0);
   layout.dirty = off("perk_choices_dirty", 0);
   layout.choices = off("perk_choice_ids", 7 * sizeof(int));
+  layout.menu_open = off("perk_menu_open", 0);  // host.cpp's: the menu opened in the last tick
   layout.elapsed = off("run_elapsed_ms", 0);
   layout.stage = off("survival_spawn_stage", 0);
   layout.active = off("creature_active_count", 0);
@@ -255,26 +256,37 @@ float Env::step(const int *a, float *obs, bool *done) {
   float aim = a[1] * 2 * PI / CR_AIM;
   in.flags = SCHEMES | (a[2] ? FIRE : 0) | (a[3] ? RELOAD : 0);
 
-  // Perks go through the game's own menu key so the choices are drawn when a player's would be; a pick
-  // made blind (menu never opened) draws them on the spot, as the game does.
+  // Perks go through the game's own menu key, as crimson.land's verifier takes them (upstream #589): the menu opens
+  // in a tick, and only the next tick may start with a pick; a tick without one closes it. So an open goes on a
+  // decision's last tick, and a pick on the first tick of the decision right after an opening. A pick asked for
+  // with no menu open opens it instead (choices already revealed are kept, not drawn again), and lands when the
+  // next decision asks for it again.
   PortableCommand cmd{0, 0};
   bool can_perk = config_.mode != 2 && pending > 0 && player->health > 0;
-  bool revealing = false;
-  if (can_perk && a[4] == 1 && dirty) {
-    cmd = {2, 0};
-    in.flags &= ~FIRE;  // the menu key is ignored while the trigger is held
-    revealing = true;
+  bool menu_open = *reinterpret_cast<const bool *>(b + layout.menu_open);
+  bool opening = false;
+  if (can_perk && a[4] == 1) {
+    opening = true;
   } else if (can_perk && a[4] >= 2) {
     int i = a[4] - 2;
     int n = player->perk_counts[PERK_ID_PERK_MASTER] > 0 ? 7 : player->perk_counts[PERK_ID_PERK_EXPERT] > 0 ? 6 : 5;
-    if (i < n && (dirty || choices[i] > 0)) cmd = {1, i};
+    if (i < n && (dirty || choices[i] > 0)) {
+      if (menu_open) cmd = {1, i};
+      else opening = true, stats.picks_deferred += 1;
+    }
   }
 
   memcpy(last_action_, a, sizeof last_action_);
-  bool ended = false;
+  bool ended = false, opened = false;
+  const PortableCommand open{2, 0};
   for (int r = 0; r < config_.repeat && !ended; ++r) {
     aim_at(aim, &in.aim_x, &in.aim_y);
-    bool ok = tick(in, r == 0 && cmd.type ? &cmd : nullptr);
+    bool last = r == config_.repeat - 1;
+    PortableInput tin = in;
+    if (opening && last) tin.flags &= ~FIRE;  // the menu key is ignored while the trigger is held
+    const PortableCommand *c = r == 0 && cmd.type ? &cmd : opening && last ? &open : nullptr;
+    bool ok = tick(tin, c);
+    opened = opening && last && ok;
     if (!ok) {
       stats.game_errors += 1;
       ended = true;
@@ -283,7 +295,7 @@ float Env::step(const int *a, float *obs, bool *done) {
     }
   }
   if (cmd.type == 1) stats.perks += 1;
-  if (revealing && *reinterpret_cast<unsigned char *>(b + layout.dirty)) stats.reveal_failed += 1;
+  if (opened && !*reinterpret_cast<const bool *>(b + layout.menu_open)) stats.reveal_failed += 1;
 
   int xp = experience();
   float reward = (xp - last_xp_) * config_.xp_scale + config_.alive_reward * config_.repeat / 60.0f;
