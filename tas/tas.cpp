@@ -30,6 +30,14 @@
 
 using namespace crimson;
 
+// <out>.actions: the seed (u32), then CR_NUM_ATNS int32 per decision. Replaying them in an Env regenerates the run.
+static bool write_actions(const std::string &path, uint32_t seed, const std::vector<Action> &committed) {
+  FILE *f = fopen(path.c_str(), "wb");
+  bool ok = f && fwrite(&seed, sizeof seed, 1, f) == 1 &&
+            fwrite(committed.data(), sizeof(Action), committed.size(), f) == committed.size();
+  return f && fclose(f) == 0 && ok;
+}
+
 // The Grim Deal finish from `from`, into `e`: open the held perk menu after d decisions, for d = 0, 1, ... (each
 // opening draws its choices from a different random state), until the choices offer Grim Deal, then take it. The
 // decisions go to *tail; false if no opening offered it before the run would end.
@@ -172,6 +180,7 @@ int main(int argc, char **argv) {
              simulated * cfg.repeat / el, cur.ticks() / 60.0 / el);
       fflush(stdout);
     }
+    if (segment % 1000 == 0) write_actions(std::string(out) + ".actions", seed, committed);  // a long run survives a crash
   }
 
   // The committed actions must reproduce the state the search reached.
@@ -186,14 +195,8 @@ int main(int argc, char **argv) {
     }
   }
 
-  // The decisions too, for training a policy on the run, unfinished or not: <out>.actions holds the seed (u32),
-  // then CR_NUM_ATNS int32 per decision. Replaying them in an Env regenerates the observations.
-  std::string actions = std::string(out) + ".actions";
-  FILE *fa = fopen(actions.c_str(), "wb");
-  if (!fa || fwrite(&seed, sizeof seed, 1, fa) != 1 ||
-      fwrite(committed.data(), sizeof(Action), committed.size(), fa) != committed.size())
-    return 1;
-  fclose(fa);
+  // The decisions too, for training a policy on the run, unfinished or not.
+  if (!write_actions(std::string(out) + ".actions", seed, committed)) return 1;
 
   // Replay the committed actions in a recording env: the transport, and the run played out to its end.
   EnvConfig rcfg = cfg;
