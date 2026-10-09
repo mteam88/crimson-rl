@@ -12,6 +12,9 @@
 //            [energizer bars]  (value of an Energizer running or on the ground, search.hpp; default 0)
 //            [grim]            (minute to start holding a perk for the Grim Deal finish; default 10, < 0 never)
 //            [guard bars]      (value of 10 seconds of Shield or Energizer, search.hpp; default 0)
+//            [patience]        (failures in a row before it gives up and the run ends; default 40)
+//            [deep]            (from 8 failures in a row, search with twice the candidates and a lookahead this many
+//                               times longer; default 1, off)
 #include <omp.h>
 
 #include <algorithm>
@@ -76,7 +79,7 @@ static bool grim_finish(const Env &from, Env &e, std::vector<Action> *tail, int 
 int main(int argc, char **argv) {
   if (argc < 4) {
     fprintf(stderr, "usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] "
-                    "[max minutes] [energizer bars] [grim] [guard bars]\n");
+                    "[max minutes] [energizer bars] [grim] [guard bars] [patience] [deep]\n");
     return 2;
   }
   set_core_library(argv[1]);
@@ -87,6 +90,8 @@ int main(int argc, char **argv) {
   float energizer = argc > 8 ? atof(argv[8]) : 0;
   double grim = argc > 9 ? atof(argv[9]) : 10;
   float guard = argc > 10 ? atof(argv[10]) : 0;
+  int patience = argc > 11 ? atoi(argv[11]) : 40;
+  int deep_l = argc > 12 ? atoi(argv[12]) : 1;
 
   EnvConfig cfg;
   cfg.auto_reset = false;
@@ -96,6 +101,12 @@ int main(int argc, char **argv) {
   Search search(cfg, M);
   search.energizer = energizer;
   search.guard = guard;
+  // Where the run is about to die, a wider and longer search.
+  std::unique_ptr<Search> deep;
+  if (deep_l > 1) {
+    deep = std::make_unique<Search>(cfg, 2 * M);
+    deep->energizer = energizer, deep->guard = guard;
+  }
 
   // Segment-start checkpoints, for backing up.
   constexpr int R = 64;
@@ -133,15 +144,17 @@ int main(int argc, char **argv) {
     save_len[segment % R] = committed.size();
     oldest = std::max(oldest, segment - R + 1);
     search.keep = grim >= 0 && cur.ticks() / 3600.0 >= grim;
+    if (deep) deep->keep = search.keep;
 
     if (finish) {
       grim_deal();
       break;
     }
-    const Outcome b = search.best(cur, seed, segment, salt, K, L, &simulated);
-    if (b.died_at >= 0 && b.died_at < K && fails >= 40 && grim >= 0 && grim_deal()) break;
+    const Outcome b = deep && fails >= 8 ? deep->best(cur, seed, segment, salt, K, deep_l * L, &simulated)
+                                         : search.best(cur, seed, segment, salt, K, L, &simulated);
+    if (b.died_at >= 0 && b.died_at < K && fails >= patience && grim >= 0 && grim_deal()) break;
 
-    if (b.died_at >= 0 && b.died_at < K && fails < 40) {
+    if (b.died_at >= 0 && b.died_at < K && fails < patience) {
       // Every candidate dies within the segment: back up further every other failure, with new candidates.
       ++fails;
       ++salt;
