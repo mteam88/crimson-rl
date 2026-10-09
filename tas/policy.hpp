@@ -25,6 +25,7 @@ struct Plan {
   int aim_rank = 0;   // aim at the k-th nearest creature
   int perk = -1;      // choice index to take, -1 random
   float jitter = 0;   // chance per decision of a random move instead
+  int keep = 0;       // pending perks left unopened, for the Grim Deal finish (tas.cpp)
 };
 
 struct Rng {
@@ -33,7 +34,8 @@ struct Rng {
   float unit() { return next() / 4294967296.0f; }
 };
 
-constexpr int BONUS_ENERGIZER = 2;  // bonus id
+constexpr int BONUS_ENERGIZER = 2, BONUS_DOUBLE_XP = 6, BONUS_SHIELD = 10;  // bonus ids
+constexpr int PERK_QUICK_LEARNER = 0x01, PERK_GRIM_DEAL = 0x08;
 
 // Perks whose death comes later than any lookahead sees: Grim Deal kills on pick, after its experience lands;
 // Death Clock kills 30 seconds later, invulnerable until then.
@@ -70,10 +72,11 @@ inline Action act(const Plan &plan, const float *obs, Rng &rng) {
   float px = s[0] * 1024, py = s[1] * 1024;
   auto wall = [](float gap) { return gap < 160 ? 40.0f * (160 - gap) / 160 : 0.0f; };
   float danger = sqrtf(ax * ax + ay * ay);
-  // An Energizer on the ground: go and take it (8 seconds without bites).
+  // An Energizer (8 seconds without bites), a Shield (7 without damage) or Double Experience on the ground: go
+  // and take it.
   const float *bo = obs + CR_OFF_BONUSES;
   for (int k = 0; k < CR_BONUSES && bo[k * CR_BONUS_F] > 0; ++k)
-    if (bo[k * CR_BONUS_F + 8] == BONUS_ENERGIZER) {
+    if (int id = (int)bo[k * CR_BONUS_F + 8]; id == BONUS_ENERGIZER || id == BONUS_SHIELD || id == BONUS_DOUBLE_XP) {
       const float *r = bo + k * CR_BONUS_F;
       float w = 40 / (r[3] + 0.05f);
       ax += r[1] / (r[3] + 1e-6f) * w, ay += r[2] / (r[3] + 1e-6f) * w;
@@ -97,7 +100,7 @@ inline Action act(const Plan &plan, const float *obs, Rng &rng) {
     a[1] = (h % CR_AIM + CR_AIM) % CR_AIM;
   }
   a[2] = 1;
-  bool pending = s[36] > 0, revealed = s[37] > 0;
+  bool pending = lroundf(s[36] * 5) > plan.keep, revealed = s[37] > 0;
   int n = (int)lroundf(s[38] * 7);
   if (pending && !revealed) a[4] = 1;
   if (pending && revealed) {
@@ -109,6 +112,10 @@ inline Action act(const Plan &plan, const float *obs, Rng &rng) {
         a[4] = 2 + (want + j) % n;
         break;
       }
+    // Quick Learner, 30% more experience from every kill for the rest of the run, beats whatever the lookahead
+    // sees in the others.
+    for (int j = 0; j < n; ++j)
+      if ((int)choices[j] == PERK_QUICK_LEARNER) a[4] = 2 + j;
   }
   return a;
 }

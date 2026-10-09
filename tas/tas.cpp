@@ -5,9 +5,13 @@
 // its segment, it backs up some segments (further on each failure) and tries new candidates there.
 // The committed actions then replay in a fresh recording env, which writes the run as a transport (check it with
 // core/ranked_check.mjs).
+// From `grim` minutes on it holds one pending perk unopened, and ends the run with Grim Deal (18% more experience,
+// then death) when the search runs out of ways to survive or the run reaches its max minutes.
 // It also writes the committed decisions to <out transport>.actions, for puffer/bc.py.
 // Usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] [max minutes]
 //            [energizer bars]  (value of an Energizer running or on the ground, search.hpp; default 0)
+//            [grim]            (minute to start holding a perk for the Grim Deal finish; default 10, < 0 never)
+//            [guard bars]      (value of 10 seconds of Shield or Energizer, search.hpp; default 0)
 #include <omp.h>
 
 #include <algorithm>
@@ -26,10 +30,45 @@
 
 using namespace crimson;
 
+// The Grim Deal finish from `from`, into `e`: open the held perk menu after d decisions, for d = 0, 1, ... (each
+// opening draws its choices from a different random state), until the choices offer Grim Deal, then take it. The
+// decisions go to *tail; false if no opening offered it before the run would end.
+static bool grim_finish(const Env &from, Env &e, std::vector<Action> *tail, int tries) {
+  std::vector<float> o(CR_OBS_SIZE);
+  Plan hold;
+  hold.keep = 1 << 20;  // the plan opens nothing itself
+  for (int d = 0; d < tries; ++d) {
+    e.copy_from(from);
+    e.observe(o.data());
+    Rng r{mix(d)};
+    tail->clear();
+    bool done = false;
+    auto play = [&](int perk) {
+      Action a = act(hold, o.data(), r);
+      if (perk >= 0) a[4] = perk;
+      tail->push_back(a);
+      e.step(a.data(), o.data(), &done);
+    };
+    for (int t = 0; t < d && !done; ++t) play(-1);
+    if (done || lroundf(o[CR_OFF_SCALARS + 36] * 5) == 0) return false;
+    bool revealed = o[CR_OFF_SCALARS + 37] > 0;
+    if (!revealed) play(1);
+    if (done) return false;
+    int n = (int)lroundf(o[CR_OFF_SCALARS + 38] * 7);
+    for (int j = 0; j < n; ++j)
+      if ((int)o[CR_OFF_IDS + 2 + j] == PERK_GRIM_DEAL) {
+        play(2 + j);
+        return done;
+      }
+    if (revealed) return false;  // the choices were drawn before: no later opening changes them
+  }
+  return false;
+}
+
 int main(int argc, char **argv) {
   if (argc < 4) {
     fprintf(stderr, "usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] "
-                    "[max minutes] [energizer bars]\n");
+                    "[max minutes] [energizer bars] [grim] [guard bars]\n");
     return 2;
   }
   set_core_library(argv[1]);
@@ -38,6 +77,8 @@ int main(int argc, char **argv) {
   int M = argc > 4 ? atoi(argv[4]) : 64, K = argc > 5 ? atoi(argv[5]) : 8, L = argc > 6 ? atoi(argv[6]) : 120;
   double max_minutes = argc > 7 ? atof(argv[7]) : 0;
   float energizer = argc > 8 ? atof(argv[8]) : 0;
+  double grim = argc > 9 ? atof(argv[9]) : 10;
+  float guard = argc > 10 ? atof(argv[10]) : 0;
 
   EnvConfig cfg;
   cfg.auto_reset = false;
@@ -46,6 +87,7 @@ int main(int argc, char **argv) {
   cur.reset(seed, obs.data());
   Search search(cfg, M);
   search.energizer = energizer;
+  search.guard = guard;
 
   // Segment-start checkpoints, for backing up.
   constexpr int R = 64;
@@ -60,13 +102,36 @@ int main(int argc, char **argv) {
   int energizers = 0;  // Energizers taken by the committed run
   float energizer_was = 0;
   auto t0 = std::chrono::steady_clock::now();
-  bool over = false;
+  bool over = false, finish = false;
+  // Grim Deal from this segment's checkpoint, or one up to 16 segments back.
+  Env trial(cfg, 99);
+  std::vector<Action> tail;
+  auto grim_deal = [&]() {
+    int xp = cur.experience();
+    for (long j = 0; j <= std::min<long>(16, segment - oldest); ++j)
+      if (grim_finish(*saves[(segment - j) % R], trial, &tail, 64)) {
+        committed.resize(save_len[(segment - j) % R]);
+        committed.insert(committed.end(), tail.begin(), tail.end());
+        cur.copy_from(trial);
+        printf("%6.2f min  Grim Deal, %ld segments back: xp %d -> %d\n", cur.ticks() / 3600.0, j, xp,
+               cur.experience());
+        return true;
+      }
+    printf("%6.2f min  no opening offered Grim Deal\n", cur.ticks() / 3600.0);
+    return false;
+  };
   while (!over) {
     saves[segment % R]->copy_from(cur);
     save_len[segment % R] = committed.size();
     oldest = std::max(oldest, segment - R + 1);
+    search.keep = grim >= 0 && cur.ticks() / 3600.0 >= grim;
 
+    if (finish) {
+      grim_deal();
+      break;
+    }
     const Outcome b = search.best(cur, seed, segment, salt, K, L, &simulated);
+    if (b.died_at >= 0 && b.died_at < K && fails >= 40 && grim >= 0 && grim_deal()) break;
 
     if (b.died_at >= 0 && b.died_at < K && fails < 40) {
       // Every candidate dies within the segment: back up further every other failure, with new candidates.
@@ -99,7 +164,7 @@ int main(int argc, char **argv) {
     ++segment;
     if (segment > frontier) frontier = segment, fails = 0;
     double minutes = cur.ticks() / 3600.0;
-    if (max_minutes > 0 && minutes >= max_minutes) over = true;
+    if (max_minutes > 0 && minutes >= max_minutes) (grim >= 0 ? finish : over) = true;
     if (segment % 50 == 0 || over) {
       double el = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
       printf("%6.2f min  xp %7d  health %5.1f  segment %ld  fails %d  salt %d  %.0f sim ticks/s  %.1fx realtime\n",
