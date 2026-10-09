@@ -38,7 +38,7 @@ bot board. Before it: 61,725,602 (p1-g0,
 | h4-s2-deep | 2 | `64 8 120 0 0 10 1 80 3` | | | | p2-g1 with the deep endgame search; stopped |
 | h5-s4-deep | 4 | `64 8 120 0 0 10 1 80 3` | | | | stopped |
 | v14-s2 | 2 | `64 8 120 0 0 10 1` | | | | v0.14 rerun of p2-g1 |
-| v14-s3 | 3 | `64 8 120 0 0 10 1` | | | | v0.14 |
+| v14-s3 | 3 | `64 8 120 0 0 10 1` | 19.47 min | 18,485,172 | 21,974,192 | v0.14; verdict ok, not posted (bot #1 is egornomic 143.8M) |
 | v14-s2-deep | 2 | `64 8 120 0 0 10 1 80 3` | | | | v0.14 |
 
 ## Findings
