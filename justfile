@@ -51,10 +51,11 @@ puffer: core
 train *args: puffer
     systemd-run --user --scope --unit=crimson-train-$(date +%s) -p MemoryHigh=12G .venv/bin/python puffer/train.py train {{args}}
 
-# A .crd replay as video, through upstream's renderer (opens a window); tools/ffmpeg-nvenc stands in for an
-# ffmpeg without libx264.
+# A .crd replay as video, through upstream's renderer on a virtual display; tools/ffmpeg-nvenc stands in for an
+# ffmpeg without libx264. The renderer runs upstream's Python sim, which drifts from the verifier core on long runs
+# unless upstream/crimson has the `core-parity` branch of github.com/mteam88/crimson checked out.
 render replay out *args:
-    upstream/crimson/.venv/bin/crimson replay render {{replay}} --out {{out}} --ffmpeg-bin tools/ffmpeg-nvenc --overwrite {{args}}
+    xvfb-run -a -s "-screen 0 1280x720x24" upstream/crimson/.venv/bin/crimson replay render {{replay}} --out {{out}} --ffmpeg-bin tools/ffmpeg-nvenc --overwrite --width 1280 --height 720 --crf 30 {{args}}
 
 # The env and the DAgger expert as a shared library (env/capi.h), for Python tools: puffer/bc.py, dagger.py.
 env-lib: core
