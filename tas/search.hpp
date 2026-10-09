@@ -18,6 +18,7 @@ struct Outcome {
   int xp;       // experience gained
   float health;
   float crowd;  // creatures within 256 units at the end
+  bool energizer;  // an Energizer is running or lies on the ground at the end
   std::vector<Action> segment;
   uint64_t at_k = 0;  // the world's hash after the segment, to check the commit reproduces it
   int candidate = 0;
@@ -25,15 +26,26 @@ struct Outcome {
 
 // Survival first (later death is better); then experience and health, less crowding. A full bar is worth 2000
 // experience, plus a quarter of the best candidate's gain so it still counts late, when experience comes in floods;
-// each creature left within 256 units costs 2% of a bar.
-inline double value(const Outcome &o, int best_xp) {
+// each creature left within 256 units costs 2% of a bar. An Energizer, rarely dropped (1 bonus in 10368), is worth
+// `energizer` bars when asked for.
+inline double value(const Outcome &o, int best_xp, float energizer) {
   if (o.died_at >= 0) return -1e9 + o.died_at;
   double bar = 2000 + 0.25 * best_xp;
-  return o.xp + (o.health / 100 - 0.02 * o.crowd) * bar;
+  return o.xp + (o.health / 100 - 0.02 * o.crowd + (o.energizer ? energizer : 0)) * bar;
+}
+
+// Whether an Energizer is running or lies on the ground in `obs`.
+inline bool energizer_seen(const float *obs) {
+  if (obs[CR_OFF_SCALARS + 34] > 0) return true;
+  for (int k = 0; k < CR_BONUSES && obs[CR_OFF_BONUSES + k * CR_BONUS_F] > 0; ++k)
+    if (obs[CR_OFF_BONUSES + k * CR_BONUS_F + 8] == BONUS_ENERGIZER) return true;
+  return false;
 }
 
 class Search {
  public:
+  float energizer = 0;  // value() weight of an Energizer; 0 leaves it to chance
+
   Search(const EnvConfig &cfg, int candidates)
       : M(candidates), obs_(CR_OBS_SIZE), obs_k_(M, std::vector<float>(CR_OBS_SIZE)) {
     for (int i = 0; i < M; ++i) envs_.push_back(std::make_unique<Env>(cfg, 2 + i));
@@ -81,6 +93,7 @@ class Search {
       out.xp = e.experience() - xp0;
       out.health = e.alive() ? e.health() : 0;
       out.crowd = o[CR_OFF_SCALARS + 47] * 32;
+      out.energizer = energizer_seen(o);
       sim += t;
     }
     if (simulated) *simulated += sim;
@@ -88,7 +101,7 @@ class Search {
     for (const Outcome &o : outs) best_xp = std::max(best_xp, o.xp);
     int best = 0;
     for (int i = 1; i < M; ++i)
-      if (value(outs[i], best_xp) > value(outs[best], best_xp)) best = i;
+      if (value(outs[i], best_xp, energizer) > value(outs[best], best_xp, energizer)) best = i;
     return outs[best];
   }
 

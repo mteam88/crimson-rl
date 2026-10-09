@@ -7,6 +7,7 @@
 // core/ranked_check.mjs).
 // It also writes the committed decisions to <out transport>.actions, for puffer/bc.py.
 // Usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] [max minutes]
+//            [energizer bars]  (value of an Energizer running or on the ground, search.hpp; default 0)
 #include <omp.h>
 
 #include <algorithm>
@@ -28,7 +29,7 @@ using namespace crimson;
 int main(int argc, char **argv) {
   if (argc < 4) {
     fprintf(stderr, "usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] "
-                    "[max minutes]\n");
+                    "[max minutes] [energizer bars]\n");
     return 2;
   }
   set_core_library(argv[1]);
@@ -36,6 +37,7 @@ int main(int argc, char **argv) {
   const char *out = argv[3];
   int M = argc > 4 ? atoi(argv[4]) : 64, K = argc > 5 ? atoi(argv[5]) : 8, L = argc > 6 ? atoi(argv[6]) : 120;
   double max_minutes = argc > 7 ? atof(argv[7]) : 0;
+  float energizer = argc > 8 ? atof(argv[8]) : 0;
 
   EnvConfig cfg;
   cfg.auto_reset = false;
@@ -43,6 +45,7 @@ int main(int argc, char **argv) {
   Env cur(cfg, 1);
   cur.reset(seed, obs.data());
   Search search(cfg, M);
+  search.energizer = energizer;
 
   // Segment-start checkpoints, for backing up.
   constexpr int R = 64;
@@ -54,6 +57,8 @@ int main(int argc, char **argv) {
   long segment = 0, frontier = 0, simulated = 0;
   long oldest = 0;  // the earliest segment whose checkpoint the ring still holds
   int fails = 0, salt = 0;
+  int energizers = 0;  // Energizers taken by the committed run
+  float energizer_was = 0;
   auto t0 = std::chrono::steady_clock::now();
   bool over = false;
   while (!over) {
@@ -86,6 +91,11 @@ int main(int argc, char **argv) {
       fprintf(stderr, "segment %ld: the commit diverged from its candidate (%d)\n", segment, b.candidate);
       return 1;
     }
+    if (obs[CR_OFF_SCALARS + 34] > energizer_was) {
+      ++energizers;
+      printf("%6.2f min  Energizer taken (%d so far)\n", cur.ticks() / 3600.0, energizers);
+    }
+    energizer_was = obs[CR_OFF_SCALARS + 34];
     ++segment;
     if (segment > frontier) frontier = segment, fails = 0;
     double minutes = cur.ticks() / 3600.0;

@@ -33,6 +33,8 @@ struct Rng {
   float unit() { return next() / 4294967296.0f; }
 };
 
+constexpr int BONUS_ENERGIZER = 2;  // bonus id
+
 // Perks whose death comes later than any lookahead sees: Grim Deal kills on pick, after its experience lands;
 // Death Clock kills 30 seconds later, invulnerable until then.
 inline bool fatal_perk(int id) { return id == 0x08 || id == 0x2F; }
@@ -68,6 +70,16 @@ inline Action act(const Plan &plan, const float *obs, Rng &rng) {
   float px = s[0] * 1024, py = s[1] * 1024;
   auto wall = [](float gap) { return gap < 160 ? 40.0f * (160 - gap) / 160 : 0.0f; };
   float danger = sqrtf(ax * ax + ay * ay);
+  // An Energizer on the ground: go and take it (8 seconds without bites).
+  const float *bo = obs + CR_OFF_BONUSES;
+  for (int k = 0; k < CR_BONUSES && bo[k * CR_BONUS_F] > 0; ++k)
+    if (bo[k * CR_BONUS_F + 8] == BONUS_ENERGIZER) {
+      const float *r = bo + k * CR_BONUS_F;
+      float w = 40 / (r[3] + 0.05f);
+      ax += r[1] / (r[3] + 1e-6f) * w, ay += r[2] / (r[3] + 1e-6f) * w;
+      danger += w;
+      break;
+    }
   ax += wall(px) - wall(1024 - px), ay += wall(py) - wall(1024 - py);
   if (danger < 1e-3f) ax += (512 - px) / 512, ay += (512 - py) / 512;  // nothing near: drift to the middle
 
