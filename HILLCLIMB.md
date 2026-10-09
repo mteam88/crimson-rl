@@ -28,9 +28,10 @@ bot board. Before it: 61,725,602 (p1-g0,
 | p1-g0 | 1 | `64 8 120 0 0 10 0` | 27.01 min | 52,230,634 | 61,725,602 | posted |
 | p2-g1 | 2 | `64 8 120 0 0 10 1` | 32.19 min | 84,236,426 | 99,424,354 | posted |
 | h1-s1-deep | 1 | `64 8 120 0 0 10 0 80 3` | | | | deep endgame search, patience 80 |
-| h2-s3-deep | 3 | `64 8 120 0 0 10 0 80 3` | | | | |
+| h2-s3-deep | 3 | `64 8 120 0 0 10 0 80 3` | 35.45 min | 81,035,460 | 95,705,430 | |
 | h3-s1-weapon2 | 1 | `64 8 120 0 0 10 0 80 3 2` | | | | top weapon worth 2 bars; A/B with h1 |
 | h4-s2-deep | 2 | `64 8 120 0 0 10 1 80 3` | | | | p2-g1 with the deep endgame search |
+| h5-s4-deep | 4 | `64 8 120 0 0 10 1 80 3` | | | | |
 
 ## Findings
 
