@@ -15,9 +15,10 @@ A 24-hour hill-climb on the TAS score, from 2026-10-08 23:46 EDT. Every run is o
 
 ## Best
 
-61,725,602: seed 1, `64 8 120 0 0 10 0` (p1-g0), posted as
-[6ec3a605…](https://crimson.land/runs/6ec3a605be1c9709888bebf7ff14e2d2462c533813c350fe928bc8d20018f0a6), #1 on the
-bot board.
+99,424,354: seed 2, `64 8 120 0 0 10 1` (p2-g1), posted 2026-10-09 01:36 EDT as
+[5f05d70b…](https://crimson.land/runs/5f05d70bcf860f5292c2de2706fafb2ca127c4571df5efc98b19957b79029c75), #1 on the
+bot board. Before it: 61,725,602 (p1-g0,
+[6ec3a605…](https://crimson.land/runs/6ec3a605be1c9709888bebf7ff14e2d2462c533813c350fe928bc8d20018f0a6)).
 
 ## Runs
 
@@ -25,10 +26,11 @@ bot board.
 | --- | --- | --- | --- | --- | --- | --- |
 | p1-g1 | 1 | `64 8 120 0 0 10 1` | 23.13 min | 50,286,440 | 59,493,594 | |
 | p1-g0 | 1 | `64 8 120 0 0 10 0` | 27.01 min | 52,230,634 | 61,725,602 | posted |
-| p2-g1 | 2 | `64 8 120 0 0 10 1` | | | | running |
+| p2-g1 | 2 | `64 8 120 0 0 10 1` | 32.19 min | 84,236,426 | 99,424,354 | posted |
 | h1-s1-deep | 1 | `64 8 120 0 0 10 0 80 3` | | | | deep endgame search, patience 80 |
 | h2-s3-deep | 3 | `64 8 120 0 0 10 0 80 3` | | | | |
 | h3-s1-weapon2 | 1 | `64 8 120 0 0 10 0 80 3 2` | | | | top weapon worth 2 bars; A/B with h1 |
+| h4-s2-deep | 2 | `64 8 120 0 0 10 1 80 3` | | | | p2-g1 with the deep endgame search |
 
 ## Findings
 
