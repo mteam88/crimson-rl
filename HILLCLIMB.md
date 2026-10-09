@@ -1,7 +1,12 @@
 # Hill-climb log
 
-A 24-hour hill-climb on the TAS score, from 2026-10-08 23:46 EDT. Every run is on master rules (banteg/crimson
-046cb811c, replay format 32).
+A 24-hour hill-climb on the TAS score, from 2026-10-08 23:46 EDT. Runs up to h5 are on banteg/crimson 046cb811c;
+from 2026-10-09 12:50 EDT runs are on v0.14.0 (020068bb1, replay format 32).
+
+v0.14.0 counts experience past 2^24 exactly (banteg/crimson#600), so every run that passed 16.7M XP under the old
+core replays differently and is retired from the boards. p2-g1 under v0.14 sends an illegal pick at tick 97,782 once
+its XP has drifted. Our env already follows the v0.14 perk-menu rule (open, then pick on the next tick), so the TAS
+needs only the rebuilt core. h1, h3, h4 and h5 were stopped unfinished.
 
 ## Rules
 
@@ -27,11 +32,14 @@ bot board. Before it: 61,725,602 (p1-g0,
 | p1-g1 | 1 | `64 8 120 0 0 10 1` | 23.13 min | 50,286,440 | 59,493,594 | |
 | p1-g0 | 1 | `64 8 120 0 0 10 0` | 27.01 min | 52,230,634 | 61,725,602 | posted |
 | p2-g1 | 2 | `64 8 120 0 0 10 1` | 32.19 min | 84,236,426 | 99,424,354 | posted |
-| h1-s1-deep | 1 | `64 8 120 0 0 10 0 80 3` | | | | deep endgame search, patience 80 |
+| h1-s1-deep | 1 | `64 8 120 0 0 10 0 80 3` | | | | deep endgame search, patience 80; stopped |
 | h2-s3-deep | 3 | `64 8 120 0 0 10 0 80 3` | 35.45 min | 81,035,460 | 95,705,430 | |
-| h3-s1-weapon2 | 1 | `64 8 120 0 0 10 0 80 3 2` | | | | top weapon worth 2 bars; A/B with h1 |
-| h4-s2-deep | 2 | `64 8 120 0 0 10 1 80 3` | | | | p2-g1 with the deep endgame search |
-| h5-s4-deep | 4 | `64 8 120 0 0 10 1 80 3` | | | | |
+| h3-s1-weapon2 | 1 | `64 8 120 0 0 10 0 80 3 2` | | | | top weapon worth 2 bars; A/B with h1; stopped |
+| h4-s2-deep | 2 | `64 8 120 0 0 10 1 80 3` | | | | p2-g1 with the deep endgame search; stopped |
+| h5-s4-deep | 4 | `64 8 120 0 0 10 1 80 3` | | | | stopped |
+| v14-s2 | 2 | `64 8 120 0 0 10 1` | | | | v0.14 rerun of p2-g1 |
+| v14-s3 | 3 | `64 8 120 0 0 10 1` | | | | v0.14 |
+| v14-s2-deep | 2 | `64 8 120 0 0 10 1 80 3` | | | | v0.14 |
 
 ## Findings
 
