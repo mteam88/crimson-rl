@@ -144,6 +144,16 @@ float Env::health() const {
   return reinterpret_cast<const player_state_t *>(world_->block + layout.player)->health;
 }
 
+void Env::debug_set_weapon(int id) {
+  auto *p = reinterpret_cast<player_state_t *>(world_->block + layout.player);
+  const weapon_stats_t &w = reinterpret_cast<const weapon_stats_t *>(world_->block + layout.weapons)[id];
+  p->weapon_id = id;
+  p->clip_size = w.clip_size;
+  p->ammo = w.clip_size;
+  p->reload_timer = 0;
+  p->shot_cooldown = 0;
+}
+
 uint64_t Env::state_hash() const {
   // Pointers into the library's image differ between Libs: hash the game's tables, which hold none.
   uint64_t h = 1469598103934665603ull;

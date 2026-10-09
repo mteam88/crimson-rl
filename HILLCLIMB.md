@@ -28,11 +28,24 @@ bot board.
 | p2-g1 | 2 | `64 8 120 0 0 10 1` | | | | running |
 | h1-s1-deep | 1 | `64 8 120 0 0 10 0 80 3` | | | | deep endgame search, patience 80 |
 | h2-s3-deep | 3 | `64 8 120 0 0 10 0 80 3` | | | | |
+| h3-s1-weapon2 | 1 | `64 8 120 0 0 10 0 80 3 2` | | | | top weapon worth 2 bars; A/B with h1 |
+
+## Findings
+
+- Score is about 0.32 × total damage dealt (creature health grows with experience), times Quick Learner, Double
+  Experience and the final Grim Deal. Once the arena saturates (15 min) it is damage-limited, so a run's ceiling scales
+  with damage per second.
+- Only Instant Winner, Fatal Lottery and Random Weapon stack, so after about 50 perks every pick is one of those (or
+  Grim Deal): keep the weapon or reroll it. In the 61.7M run the weapon changes every 5 to 10 seconds late on.
+- `just weapons` at 23 to 25 minutes of the 61.7M run (3 s windows, 32 rollouts, relative to the median weapon):
+  Splitter Gun 1.9 to 4.6, Ion Cannon 1.4 to 2.0, Rocket Launcher 1.0 to 1.8, Ion Shotgun 1.0 to 1.9; most others
+  about 1. Noisy: at 23 minutes no weapon mattered.
+- Living Fortress multiplies bullet damage by 1 + 0.05 × seconds standing still (up to 30): no use while dodging.
 
 ## Queue
 
 1. Deep endgame search with patience (h1, h2).
-2. Damage-perk priorities in the perk picks (Uranium, Barrel Greaser, Doctor, Living Fortress, Ion Gun Master,
-   Pyromaniac), and no picks of Fatal Lottery or Instant Winner.
+2. Top weapons in the value (h3). Damage-perk priorities matter less: every one-shot perk is owned by about 10
+   minutes either way.
 3. Higher guard weights for chaining Shields.
 4. A seed hunt with the best config.

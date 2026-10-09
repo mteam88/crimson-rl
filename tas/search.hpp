@@ -22,6 +22,7 @@ struct Outcome {
   float double_xp;  // seconds of Double Experience left at the end
   float guard;      // seconds of Shield and Energizer left at the end, and half of those lying on the ground
   float seconds;    // seconds played
+  bool top_weapon;  // a top weapon in hand at the end (top_weapon below)
   std::vector<Action> segment;
   uint64_t at_k = 0;  // the world's hash after the segment, to check the commit reproduces it
   int candidate = 0;
@@ -33,11 +34,13 @@ struct Outcome {
 // `energizer` bars when asked for. Double Experience left running is the experience it will double, at the best
 // candidate's rate. Ten seconds of protection (Shield: no damage at all; Energizer: no bites) are worth `guard` bars:
 // late in a run, when creatures outlast the gun, they are what keeps it alive, and the search finds the drops.
-inline double value(const Outcome &o, int best_xp, float energizer, float guard) {
+// A top weapon in hand is worth `weapon` bars: the lookahead is too short to see what it earns before the next one.
+inline double value(const Outcome &o, int best_xp, float energizer, float guard, float weapon) {
   if (o.died_at >= 0) return -1e9 + o.died_at;
   double bar = 2000 + 0.25 * best_xp;
   return o.xp + o.double_xp * best_xp / o.seconds +
-         (o.health / 100 - 0.02 * o.crowd + (o.energizer ? energizer : 0) + guard * o.guard / 10) * bar;
+         (o.health / 100 - 0.02 * o.crowd + (o.energizer ? energizer : 0) + guard * o.guard / 10 +
+          (o.top_weapon ? weapon : 0)) * bar;
 }
 
 // Seconds of protection running in `obs`, and half of what lies on the ground.
@@ -50,6 +53,10 @@ inline float guard_seen(const float *obs) {
   }
   return g;
 }
+
+// The weapons that earn the most late in a run, about 1.5 to 2.5 times the median (tas/weapons.cpp at 23 to 25
+// minutes of a 61.7M run): Splitter Gun, Ion Cannon, Rocket Launcher, Ion Shotgun.
+inline bool top_weapon(int id) { return id == 29 || id == 23 || id == 12 || id == 31; }
 
 // Whether an Energizer is running or lies on the ground in `obs`.
 inline bool energizer_seen(const float *obs) {
@@ -64,6 +71,7 @@ class Search {
   float energizer = 0;  // value() weight of an Energizer; 0 leaves it to chance
   int keep = 0;         // pending perks no candidate opens (Plan::keep)
   float guard = 0;      // value() weight of protection; 0 leaves it to the lookahead
+  float weapon = 0;     // value() weight of a top weapon in hand
 
   Search(const EnvConfig &cfg, int candidates)
       : M(candidates), repeat_(cfg.repeat), obs_(CR_OBS_SIZE), obs_k_(M, std::vector<float>(CR_OBS_SIZE)) {
@@ -119,6 +127,7 @@ class Search {
       out.double_xp = o[CR_OFF_SCALARS + 35] * 10;
       out.guard = guard_seen(o);
       out.seconds = std::max(t, 1) * repeat_ / 60.0f;
+      out.top_weapon = top_weapon((int)o[CR_OFF_IDS]);
       sim += t;
     }
     if (simulated) *simulated += sim;
@@ -126,7 +135,8 @@ class Search {
     for (const Outcome &o : outs) best_xp = std::max(best_xp, o.xp);
     int best = 0;
     for (int i = 1; i < M; ++i)
-      if (value(outs[i], best_xp, energizer, guard) > value(outs[best], best_xp, energizer, guard)) best = i;
+      if (value(outs[i], best_xp, energizer, guard, weapon) > value(outs[best], best_xp, energizer, guard, weapon))
+        best = i;
     return outs[best];
   }
 

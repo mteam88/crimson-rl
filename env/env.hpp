@@ -58,6 +58,8 @@ class Env {
   long ticks() const { return ticks_; }
   int experience() const;
   bool alive() const;
+  // Puts weapon `id` in hand, loaded, ignoring perks: for measuring weapons only (the run no longer replays).
+  void debug_set_weapon(int id);
   // The current run as upstream's transport (PortableConfig, then per tick input + commands), when recording.
   const std::vector<uint8_t> &transport() const { return transport_; }
   // The last finished run's transport and score, when recording.

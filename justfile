@@ -68,3 +68,13 @@ bc out *args: env-lib
 bot first runs="32" *args: core
     {{cxx}} -fms-extensions -fopenmp -I env core/world.cpp env/env.cpp tas/bot.cpp -ldl -pthread -o build/bot
     systemd-run --user --scope --unit=crimson-bot-$(date +%s) -p MemoryHigh=8G ./build/bot build/core/libcrimson_core.so {{first}} {{runs}} {{args}}
+
+# A TAS run's experience rate, health and weapons over time, from its .actions.
+inspect actions every="30": core
+    {{cxx}} -fms-extensions -I env core/world.cpp env/env.cpp tas/inspect.cpp -ldl -pthread -o build/inspect
+    ./build/inspect build/core/libcrimson_core.so {{actions}} {{every}}
+
+# Each weapon's experience rate from `at` seconds into a TAS run (tas/weapons.cpp).
+weapons actions at *args: core
+    {{cxx}} -fms-extensions -fopenmp -I env core/world.cpp env/env.cpp tas/weapons.cpp -ldl -pthread -o build/weapons
+    ./build/weapons build/core/libcrimson_core.so {{actions}} {{at}} {{args}}

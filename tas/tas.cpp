@@ -15,6 +15,7 @@
 //            [patience]        (failures in a row before it gives up and the run ends; default 40)
 //            [deep]            (from 8 failures in a row, search with twice the candidates and a lookahead this many
 //                               times longer; default 1, off)
+//            [weapon bars]     (value of a top weapon in hand, search.hpp; default 0)
 #include <omp.h>
 
 #include <algorithm>
@@ -79,7 +80,7 @@ static bool grim_finish(const Env &from, Env &e, std::vector<Action> *tail, int 
 int main(int argc, char **argv) {
   if (argc < 4) {
     fprintf(stderr, "usage: tas <libcrimson_core.so> <seed> <out transport> [candidates] [segment] [lookahead] "
-                    "[max minutes] [energizer bars] [grim] [guard bars] [patience] [deep]\n");
+                    "[max minutes] [energizer bars] [grim] [guard bars] [patience] [deep] [weapon bars]\n");
     return 2;
   }
   set_core_library(argv[1]);
@@ -92,6 +93,7 @@ int main(int argc, char **argv) {
   float guard = argc > 10 ? atof(argv[10]) : 0;
   int patience = argc > 11 ? atoi(argv[11]) : 40;
   int deep_l = argc > 12 ? atoi(argv[12]) : 1;
+  float weapon = argc > 13 ? atof(argv[13]) : 0;
 
   EnvConfig cfg;
   cfg.auto_reset = false;
@@ -101,11 +103,12 @@ int main(int argc, char **argv) {
   Search search(cfg, M);
   search.energizer = energizer;
   search.guard = guard;
+  search.weapon = weapon;
   // Where the run is about to die, a wider and longer search.
   std::unique_ptr<Search> deep;
   if (deep_l > 1) {
     deep = std::make_unique<Search>(cfg, 2 * M);
-    deep->energizer = energizer, deep->guard = guard;
+    deep->energizer = energizer, deep->guard = guard, deep->weapon = weapon;
   }
 
   // Segment-start checkpoints, for backing up.
